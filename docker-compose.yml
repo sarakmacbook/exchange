@@ -1,0 +1,25 @@
+# One-click Docker —  `docker compose up -d`
+# Fill .env or set env vars directly, then:  docker compose up -d --build
+# Logs: docker compose logs -f
+
+services:
+  bot:
+    build: .
+    container_name: p2p-bot
+    restart: unless-stopped
+    volumes:
+      # persist config + data across restarts
+      - ./config.json:/app/config.json
+      - ./data.json:/app/data.json
+    env_file:
+      - .env          # optional — see .env.example
+    environment:
+      # Alternatively set directly here:
+      # BOT_TOKEN: "123456:ABC..."
+      # ADMIN_IDS: "123456789"
+      # ASSET: "USDT"
+      # FIAT: "USD"
+      # INTERVAL: "60"
+      PYTHONUNBUFFERED: 1
+    # no ports needed — bot uses Telegram long polling (outbound only)
+

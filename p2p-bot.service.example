@@ -1,0 +1,20 @@
+[Unit]
+Description=P2P Merchant Price Bot — Binance/Bybit/OKX/Bitget
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/p2p-bot
+# or /home/ubuntu/exchange
+ExecStart=/opt/p2p-bot/venv/bin/python /opt/p2p-bot/bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=p2p-bot
+
+[Install]
+WantedBy=multi-user.target

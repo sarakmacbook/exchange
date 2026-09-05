@@ -1,53 +1,186 @@
-import os, sys, json, asyncio, logging
+import os, sys, json, asyncio, logging, argparse, signal
 from dataclasses import asdict
+from pathlib import Path
 import httpx
 from telegram import Update, InlineKeyboardButton as B, InlineKeyboardMarkup as KB
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
                           MessageHandler, ContextTypes, filters)
 from exchanges import Merchant, parse_url, fetch, HEADERS
 
-CONFIG, DB = "config.json", "data.json"
-ICON = {"binance": "🟡", "bybit": "🟣", "okx": "⚫", "bitget": "🔵"}
-logging.basicConfig(level=logging.INFO)
+# ── paths: always relative to this file (works with systemd WorkingDirectory) ──
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG = BASE_DIR / "config.json"
+DB = BASE_DIR / "data.json"
 
-# ---------------- interactive setup (replaces .env) ----------------
+ICON = {"binance": "🟡", "bybit": "🟣", "okx": "⚫", "bitget": "🔵"}
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+log = logging.getLogger("p2p-bot")
+
+# ── CLI / ENV ──
+def parse_cli():
+    p = argparse.ArgumentParser(description="P2P Merchant Price Bot", add_help=True)
+    p.add_argument("--setup", action="store_true", help="Re-run interactive setup wizard")
+    p.add_argument("--reconfigure", action="store_true", help="Alias for --setup")
+    p.add_argument("--token", help="Bot token from @BotFather")
+    p.add_argument("--admins", help="Telegram user ID(s), comma-separated")
+    p.add_argument("--asset", help="Asset, e.g. USDT")
+    p.add_argument("--fiat", help="Fiat, e.g. USD")
+    p.add_argument("--interval", type=int, help="Check interval seconds")
+    return p.parse_args()
+
+CLI = parse_cli()
+if CLI.reconfigure:
+    CLI.setup = True
+
+# ── config helpers ──
 def ask(q, default=None, check=None):
     while True:
         v = input(f"{q}{f' [{default}]' if default else ''}: ").strip() or (default or "")
         if v and (check is None or check(v)): return v
         print("  ❌ Invalid, try again.")
 
-def setup():
+def env_or_cli(name_envs, cli_val, default=None):
+    # name_envs: list of env var names to try
+    for n in name_envs:
+        v = os.getenv(n)
+        if v: return v.strip()
+    if cli_val: return str(cli_val).strip()
+    return default
+
+def setup_interactive(existing=None):
     print("\n🤖 P2P Price Bot — first-time setup\n" + "-" * 40)
+    print("  Get token from @BotFather → /newbot")
+    print("  Get your ID from @userinfobot\n")
+    # prefill from env/cli/existing
+    def prefill(key, envs, cli_v, fallback):
+        if existing and existing.get(key): return str(existing[key])
+        v = env_or_cli(envs, cli_v, None)
+        return v if v else fallback
     cfg = {
-        "token":    ask("Bot token from @BotFather", check=lambda v: ":" in v),
-        "admins":   ask("Your Telegram user ID(s), comma-separated (get it from @userinfobot)",
+        "token":    ask("Bot token from @BotFather",
+                        prefill("token", ["BOT_TOKEN","TELEGRAM_BOT_TOKEN","TOKEN"], CLI.token, None),
+                        check=lambda v: ":" in v),
+        "admins":   ask("Your Telegram user ID(s), comma-separated (from @userinfobot)",
+                        prefill("admins", ["ADMIN_IDS","ADMINS"], CLI.admins, None),
                         check=lambda v: all(x.strip().isdigit() for x in v.split(","))),
-        "asset":    ask("Asset", "USDT").upper(),
-        "fiat":     ask("Fiat currency", "USD").upper(),
-        "interval": int(ask("Check prices every N seconds", "60", check=str.isdigit)),
+        "asset":    ask("Asset", prefill("asset", ["ASSET"], CLI.asset, "USDT")).upper(),
+        "fiat":     ask("Fiat currency", prefill("fiat", ["FIAT"], CLI.fiat, "USD")).upper(),
+        "interval": int(ask("Check prices every N seconds",
+                            str(prefill("interval", ["INTERVAL"], CLI.interval, "60")), check=str.isdigit)),
     }
     json.dump(cfg, open(CONFIG, "w"), indent=1)
+    try: os.chmod(CONFIG, 0o600)
+    except Exception: pass
     print(f"✅ Saved to {CONFIG}. Re-run with  python bot.py --setup  to change.\n")
     return cfg
 
-if "--setup" in sys.argv or not os.path.exists(CONFIG): cfg = setup()
-else: cfg = json.load(open(CONFIG))
+def load_config():
+    # 1. try file
+    file_cfg = {}
+    if CONFIG.exists():
+        try: file_cfg = json.loads(CONFIG.read_text())
+        except Exception as e:
+            log.warning("config.json unreadable: %s — will recreate", e)
+            file_cfg = {}
 
-TOKEN, ASSET, FIAT, INTERVAL = cfg["token"], cfg["asset"], cfg["fiat"], cfg["interval"]
-ADMINS = {int(x) for x in cfg["admins"].split(",")}
+    # 2. overrides from env/cli (highest priority)
+    #    If env provides token+admins we treat it as authoritative and persist to file
+    env_token = env_or_cli(["BOT_TOKEN","TELEGRAM_BOT_TOKEN","TOKEN"], CLI.token)
+    env_admins = env_or_cli(["ADMIN_IDS","ADMINS"], CLI.admins)
+    env_asset = env_or_cli(["ASSET"], CLI.asset)
+    env_fiat = env_or_cli(["FIAT"], CLI.fiat)
+    env_interval = env_or_cli(["INTERVAL"], CLI.interval)
 
-# ---------------- state ----------------
+    # If CLI --setup requested, force interactive (prefilled from env/file)
+    if CLI.setup:
+        merged = dict(file_cfg)
+        # pre-apply env/cli so wizard shows them as defaults
+        if env_token: merged["token"] = env_token
+        if env_admins: merged["admins"] = env_admins
+        if env_asset: merged["asset"] = env_asset.upper()
+        if env_fiat: merged["fiat"] = env_fiat.upper()
+        if env_interval: merged["interval"] = int(str(env_interval).strip())
+        return setup_interactive(merged)
+
+    # If file missing but env provides minimum (token+admins) → create without prompting
+    if not file_cfg and env_token and env_admins:
+        log.info("Creating config.json from environment variables")
+        cfg = {
+            "token": env_token,
+            "admins": env_admins.replace(" ", ""),
+            "asset": (env_asset or "USDT").upper(),
+            "fiat": (env_fiat or "USD").upper(),
+            "interval": int(str(env_interval or "60").strip()),
+        }
+        # validate
+        if ":" not in cfg["token"]:
+            log.error("BOT_TOKEN invalid (missing ':')")
+            sys.exit(1)
+        json.dump(cfg, open(CONFIG, "w"), indent=1)
+        try: os.chmod(CONFIG, 0o600)
+        except: pass
+        return cfg
+
+    # If file exists, apply env overrides (env wins, and we persist)
+    if file_cfg:
+        dirty = False
+        if env_token and env_token != file_cfg.get("token"):
+            file_cfg["token"] = env_token; dirty = True; log.info("Overriding token from env")
+        if env_admins and env_admins.replace(" ","") != file_cfg.get("admins"):
+            file_cfg["admins"] = env_admins.replace(" ",""); dirty = True; log.info("Overriding admins from env")
+        if env_asset and env_asset.upper() != file_cfg.get("asset"):
+            file_cfg["asset"] = env_asset.upper(); dirty = True
+        if env_fiat and env_fiat.upper() != file_cfg.get("fiat"):
+            file_cfg["fiat"] = env_fiat.upper(); dirty = True
+        if env_interval and str(env_interval) != str(file_cfg.get("interval")):
+            try: file_cfg["interval"] = int(str(env_interval).strip()); dirty=True
+            except: pass
+        if dirty:
+            json.dump(file_cfg, open(CONFIG, "w"), indent=1)
+            try: os.chmod(CONFIG, 0o600)
+            except: pass
+        return file_cfg
+
+    # No file, no env → interactive if TTY, else error
+    if sys.stdin.isatty():
+        return setup_interactive(file_cfg)
+    else:
+        log.error("config.json not found and no BOT_TOKEN/ADMIN_IDS env provided.")
+        log.error("Run interactively:  python bot.py --setup")
+        log.error("Or set env:  BOT_TOKEN=123:ABC ADMIN_IDS=123456 python bot.py")
+        log.error("Or use installer:  bash install.sh --token 123:ABC --admins 123456")
+        sys.exit(1)
+
+cfg = load_config()
+
+TOKEN, ASSET, FIAT, INTERVAL = cfg["token"], cfg["asset"], cfg["fiat"], int(cfg["interval"])
+try:
+    ADMINS = {int(x.strip()) for x in cfg["admins"].split(",") if x.strip()}
+except Exception:
+    log.error("admins field invalid: %r — should be comma-separated IDs", cfg.get("admins"))
+    sys.exit(1)
+
+if ":" not in TOKEN:
+    log.error("token invalid — should contain ':'")
+    sys.exit(1)
+
+# ── state ──
 def load():
-    try: return json.load(open(DB))
+    try: return json.loads(DB.read_text())
     except FileNotFoundError: return {"group": None, "auto": False, "merchants": {}, "last": {}}
-def save(): json.dump(state, open(DB, "w"), indent=1)
+    except Exception as e:
+        log.warning("data.json unreadable: %s — resetting", e)
+        return {"group": None, "auto": False, "merchants": {}, "last": {}}
+def save(): 
+    DB.write_text(json.dumps(state, indent=1))
+    try: os.chmod(DB, 0o600)
+    except: pass
 state = load()
 merchants = lambda: [Merchant(**m) for m in state["merchants"].values()]
-is_admin = lambda u: u.effective_user.id in ADMINS
+is_admin = lambda u: u.effective_user and u.effective_user.id in ADMINS
 fmt = lambda p: f"{p:.4f}".rstrip("0").rstrip(".") if p is not None else "—"
 
-# ---------------- panel ----------------
+# ── panel ──
 def panel():
     a = state["auto"]
     return KB([[B("📊 Post prices now", callback_data="post"),
@@ -62,13 +195,15 @@ def panel_text():
 
 async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if is_admin(u): await u.message.reply_html(panel_text(), reply_markup=panel())
+    elif u.effective_chat.type == "private":
+        await u.message.reply_text("⛔ You are not authorized. Ask the bot admin to add your ID.")
 
 async def setgroup(u: Update, c):
     if not is_admin(u): return
     state["group"] = u.effective_chat.id; save()
     await u.message.reply_text("✅ This group will receive price updates.")
 
-# ---------------- add merchant by pasting URL ----------------
+# ── add merchant by pasting URL ──
 async def on_text(u: Update, c):
     if not is_admin(u) or u.effective_chat.type != "private": return
     m = parse_url(u.message.text, ASSET, FIAT)
@@ -81,7 +216,7 @@ async def on_text(u: Update, c):
                         f"Sell: {fmt(r['sell'])} · Buy: {fmt(r['buy'])}")
     await u.message.reply_html(panel_text(), reply_markup=panel())
 
-# ---------------- prices ----------------
+# ── prices ──
 async def get_prices():
     ms = merchants()
     async with httpx.AsyncClient(headers=HEADERS, timeout=15) as cl:
@@ -117,7 +252,7 @@ async def job(c: ContextTypes.DEFAULT_TYPE):
         try: await post(c.bot)
         except Exception as e: logging.warning("auto post failed: %s", e)
 
-# ---------------- buttons ----------------
+# ── buttons ──
 def list_kb():
     rows = [[B(f"❌ {ICON[m.exchange]} {m.exchange.title()} · {m.nickname or m.merchant_id}",
                callback_data=f"del:{m.key}")] for m in merchants()]
@@ -146,16 +281,28 @@ async def on_button(u: Update, c):
     try: await q.edit_message_text(panel_text(), parse_mode="HTML", reply_markup=panel())
     except Exception: pass  # unchanged content
 
-# ---------------- run ----------------
+async def error_handler(update, context):
+    log.warning("Update %s caused error %s", update, context.error)
+
+# ── run ──
 def main():
+    # graceful shutdown for systemd
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try: signal.signal(sig, lambda *_: sys.exit(0))
+        except: pass
+
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("setgroup", setgroup))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_error_handler(error_handler)
     app.job_queue.run_repeating(job, interval=INTERVAL, first=5)
     print(f"🚀 Bot running · {ASSET}/{FIAT} · every {INTERVAL}s · Ctrl+C to stop")
-    app.run_polling(drop_pending_updates=True)
+    print(f"   Admins: {', '.join(map(str, ADMINS))} · Group: {state['group'] or 'not set'} · Merchants: {len(state['merchants'])}")
+    if not state["group"]:
+        print("   → Add bot to your Telegram group and send /setgroup there")
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
