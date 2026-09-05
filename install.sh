@@ -139,6 +139,11 @@ BANNER
 echo -e "${DIM}Ubuntu 20.04 / 22.04 / 24.04 · Binance · Bybit · OKX · Bitget${NC}\n"
 }
 
+# ── Reopen stdin from /dev/tty if piped (curl | bash) so prompts work ──
+if [[ ! -t 0 && -e /dev/tty && -r /dev/tty ]]; then
+  exec < /dev/tty
+fi
+
 # ── 1. banner & checks ──
 banner
 
