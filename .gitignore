@@ -1,0 +1,26 @@
+# python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# bot data — never commit secrets
+config.json
+data.json
+.env
+bot.log
+bot.pid
+
+# os
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# systemd local overrides
+*.service.local
