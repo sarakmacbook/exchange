@@ -6,6 +6,10 @@ and posts their **best selling price** (merchant sells → you buy) and **best b
 
 Repo: https://github.com/sarakmacbook/exchange
 
+[![⬇️ One-Click Download (ZIP)](https://img.shields.io/badge/⬇️%20One%20Click%20Download%20Source%20(ZIP)-brightgreen)](https://github.com/sarakmacbook/exchange/archive/refs/heads/main.zip)
+[![🚀 One-Click Install Script](https://img.shields.io/badge/🚀%20One%20Click%20Install%20Script-blue)](https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh)
+[![🗑️ One-Click Uninstall](https://img.shields.io/badge/🗑️%20One%20Click%20Uninstall-redorange)](https://raw.githubusercontent.com/sarakmacbook/exchange/main/uninstall.sh)
+
 ## ✨ Features
 - 🔗 **Paste a public merchant URL** to the bot → merchant is added instantly (no commands).
 - 📊 **One button** posts all merchant prices to your group right now.
@@ -29,13 +33,37 @@ Repo: https://github.com/sarakmacbook/exchange
 
 ---
 
+## ⬇️ One-Click Download from GitHub
+
+No git, no cloning — grab the latest source in **one click**:
+
+[![⬇️ Download exchange (ZIP)](https://img.shields.io/badge/⬇️%20Download%20Source%20(ZIP)-brightgreen)](https://github.com/sarakmacbook/exchange/archive/refs/heads/main.zip)
+
+<details>
+<summary>Prefer the terminal? (curl / wget)</summary>
+
+```bash
+# curl
+curl -L -o exchange-main.zip https://github.com/sarakmacbook/exchange/archive/refs/heads/main.zip
+unzip exchange-main.zip && cd exchange-main
+
+# or wget
+wget https://github.com/sarakmacbook/exchange/archive/refs/heads/main.zip
+unzip exchange-main.zip && cd exchange-main
+```
+</details>
+
+After unzipping, follow [One-Click Install](#-one-click-install-on-ubuntu-vps-2004--2204--2404) (Option B) — `cd exchange-main && sudo bash install.sh`.
+
+---
+
 ## 🚀 One-Click Install on Ubuntu VPS (20.04 / 22.04 / 24.04)
 
 > **Fresh VPS? Paste ONE command and you're done.** Tested on clean Ubuntu.
 
-### Option A — One-liner (fastest)
+### Option A — Install script, one-liner (fastest)
 
-SSH into your VPS, then run:
+[`install.sh`](install.sh) is the one‑click install script (source: [raw on GitHub](https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh)). SSH into your VPS, then run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh | bash
@@ -153,15 +181,7 @@ sudo bash ~/exchange/install.sh --update
 # alternative: cd ~/exchange && git pull && sudo systemctl restart p2p-bot
 ```
 
-**Uninstall (keeps data):**
-
-```bash
-sudo bash ~/exchange/uninstall.sh
-# or:
-sudo bash ~/exchange/install.sh --uninstall
-# full wipe (if you really want):
-sudo rm -rf /opt/p2p-bot ~/exchange/config.json ~/exchange/data.json
-```
+**Uninstall:** see the dedicated section below — [🗑️ Uninstall](#-uninstall).
 
 ---
 
@@ -175,6 +195,58 @@ docker compose up -d --build    # update after git pull
 ```
 
 Env vars override `config.json` — set `BOT_TOKEN`, `ADMIN_IDS`, `ASSET`, `FIAT`, `INTERVAL` in `.env` or `docker-compose.yml`.
+
+---
+
+## 🗑️ Uninstall
+
+### Option 1 — One-liner (one click, works from anywhere)
+
+[![🗑️ One-Click Uninstall](https://img.shields.io/badge/🗑️%20One%20Click%20Uninstall-redorange)](https://raw.githubusercontent.com/sarakmacbook/exchange/main/uninstall.sh)
+
+SSH into your VPS and paste ONE command — works even if you already deleted the code:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/uninstall.sh | sudo bash
+```
+
+It **stops the bot, removes the `p2p-bot` systemd service, kills any running process, and cleans the cron entry** — data files are kept (see *Full wipe* below to delete them).
+
+### Option 2 — uninstall script (from the install directory, keeps your data)
+
+```bash
+# if installed as a regular user
+bash ~/exchange/uninstall.sh
+
+# if installed as root (to /opt/p2p-bot)
+sudo bash /opt/p2p-bot/uninstall.sh
+```
+
+### Option 3 — via the installer
+
+```bash
+sudo bash ~/exchange/install.sh --uninstall
+```
+
+All options do the same thing — **stop the service, remove the systemd unit, kill any running bot, and clean the cron entry** — and keep `config.json` and `data.json` so a reinstall restores your merchants instantly.
+
+### Full wipe (delete code + data)
+
+```bash
+# regular-user install
+rm -rf ~/exchange
+
+# root install
+sudo rm -rf /opt/p2p-bot
+```
+
+### Docker
+
+```bash
+cd ~/exchange          # or wherever you cloned it
+docker compose down    # stop + remove containers
+rm -rf ~/exchange      # delete code + .env (data lived in config.json/data.json)
+```
 
 ---
 
