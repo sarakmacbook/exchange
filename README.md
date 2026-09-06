@@ -6,16 +6,38 @@ Telegram bot that watches your favourite **P2P merchants** on **Binance · Bybit
 
 ## ⚡ One-Click Install
 
+Pick the installer that matches your machine — all three ask for your **bot token** (from [@BotFather](https://t.me/BotFather) → `/newbot`) and your **Telegram ID** (from [@userinfobot](https://t.me/userinfobot)), then start the bot.
+
+| Installer | Best for | What it does |
+|---|---|---|
+| `install.sh` | Ubuntu/Debian **VPS with systemd** | venv + systemd service (auto-restart & reboot-safe) |
+| `install-docker.sh` | Any machine **with Docker**, incl. macOS | Docker Compose container (`restart: unless-stopped`) |
+| `install-local.sh` | **macOS / Linux without systemd / WSL** | venv + nohup + launchd (macOS) or cron `@reboot` autostart |
+
+### Option A — VPS with systemd (recommended)
+
 Paste this on a fresh Ubuntu VPS (20.04 / 22.04 / 24.04):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh | bash
 ```
 
-That's it. The installer sets up Python, installs the bot, asks for your **bot token** and **Telegram ID**, and starts it as a `systemd` service that survives reboots.
+### Option B — Docker (macOS, Windows, any Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-docker.sh | bash
+```
+
+The script checks/installs Docker, creates `config.json` + `.env`, and runs `docker compose up -d --build`.
+
+### Option C — Local / no systemd (laptops, WSL, shared hosting)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-local.sh | bash
+```
 
 <details>
-<summary>No prompts (for automation)</summary>
+<summary>No prompts (for automation) — any installer</summary>
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh | bash -s -- \
@@ -24,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.
 </details>
 
 <details>
-<summary>Docker instead</summary>
+<summary>Docker without the installer</summary>
 
 ```bash
 git clone https://github.com/sarakmacbook/exchange.git && cd exchange
@@ -32,9 +54,6 @@ cp .env.example .env && nano .env      # BOT_TOKEN + ADMIN_IDS
 docker compose up -d --build
 ```
 </details>
-
-> Need a token? Telegram → [@BotFather](https://t.me/BotFather) → `/newbot`.
-> Need your ID? Telegram → [@userinfobot](https://t.me/userinfobot).
 
 ---
 
@@ -63,19 +82,46 @@ docker compose up -d --build
 
 ## 🛠️ Manage
 
+**systemd (Option A):**
+
 ```bash
 sudo systemctl status p2p-bot     # is it running?
 sudo journalctl -u p2p-bot -f     # live logs
 sudo systemctl restart p2p-bot    # restart
-
 sudo bash install.sh --reconfigure   # change token / pair / interval
 sudo bash install.sh --update        # pull latest + restart
+```
+
+**Docker (Option B):**
+
+```bash
+docker compose ps             # status
+docker compose logs -f        # live logs
+docker compose restart        # restart
+bash install-docker.sh --reconfigure   # change token / pair / interval
+bash install-docker.sh --update        # pull latest + rebuild + restart
+bash install-docker.sh --down          # stop container (keep data)
+```
+
+**Local / no systemd (Option C):**
+
+```bash
+tail -f ~/exchange-local/bot.log   # live logs (or $INSTALL_DIR/bot.log)
+bash install-local.sh --stop       # stop (start again by re-running install-local.sh)
+bash install-local.sh --reconfigure  # change token / pair / interval
+bash install-local.sh --update        # pull latest + restart
+bash install-local.sh --uninstall     # stop + remove autostart (keep data)
 ```
 
 **Uninstall (keeps your data):**
 
 ```bash
+# systemd install
 curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/uninstall.sh | bash
+# docker install
+bash install-docker.sh --down
+# local install
+bash install-local.sh --uninstall
 ```
 
 ---
@@ -86,7 +132,10 @@ curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/uninstal
 |---|---|
 | `bot.py` | Telegram bot (panel, buttons, auto-poster) |
 | `exchanges.py` | Binance / Bybit / OKX / Bitget adapters + URL parser |
-| `install.sh` / `uninstall.sh` | One-click installer / uninstaller |
+| `install.sh` | One-click installer — systemd VPS |
+| `install-docker.sh` | One-click installer — Docker Compose |
+| `install-local.sh` | One-click installer — macOS / no systemd |
+| `uninstall.sh` | Remove systemd service (keeps data) |
 | `Dockerfile` / `docker-compose.yml` | Docker alternative |
 | `config.json` | Auto-created: token, admins, pair, interval |
 | `data.json` | Auto-created: group, merchants, last prices |
