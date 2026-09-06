@@ -449,9 +449,12 @@ else
   cat "$CONFIG_FILE" | python3 -m json.tool 2>/dev/null | sed 's/"token": ".*"/"token": "***"/' || cat "$CONFIG_FILE"
 fi
 
-# ensure data.json exists
+# ensure data.json exists (seeded with the same defaults bot.py uses —
+# see DEFAULT_SETTINGS in bot.py so the two never drift apart)
 if [[ ! -f "$INSTALL_DIR/data.json" ]]; then
-  echo '{"group": null, "auto": false, "merchants": {}, "last": {}}' > "$INSTALL_DIR/data.json"
+  cat > "$INSTALL_DIR/data.json" <<'EOF'
+{"group": null, "auto": false, "merchants": {}, "last": {}, "settings": {"show_liquidity": false, "show_buttons": true, "custom_header": "", "custom_body": "", "custom_footer": "", "auto_delete": true, "delete_after_hours": 24, "delete_join_left": true}, "last_msg_id": null, "last_msg_time": null}
+EOF
 fi
 chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 chmod 600 "$INSTALL_DIR/data.json" 2>/dev/null || true
@@ -569,10 +572,22 @@ echo -e "  ${BOLD}Data:${NC}        $INSTALL_DIR/data.json"
 echo ""
 echo -e "  ${BOLD}Next steps on Telegram:${NC}"
 echo -e "   1. Open your bot → send ${CYAN}/start${NC} (in private chat)"
-echo -e "   2. Add bot to your group → send ${CYAN}/setgroup${NC} inside the group"
+echo -e "   2. Tap ${CYAN}👥 Set group${NC} → pick your group (the bot joins & registers it)"
+echo -e "      …or add the bot to the group and send ${CYAN}/setgroup${NC} there"
 echo -e "   3. Back in private chat → ${CYAN}paste a merchant URL${NC} to add it"
 echo -e "      Binance / Bybit / OKX / Bitget public merchant links supported"
-echo -e "   4. Use panel buttons: ${CYAN}📊 Post now${NC} · ${CYAN}🟢 Auto ON/OFF${NC} · ${CYAN}📋 Merchants${NC}"
+echo -e "   4. Tap ${CYAN}🟢 Auto: ON${NC} — prices post automatically whenever they change"
+echo ""
+echo -e "  ${BOLD}Panel buttons:${NC}"
+echo -e "   ${CYAN}📊 Post now${NC} · ${CYAN}🟢 Auto ON/OFF${NC} · ${CYAN}📋 Merchants${NC} · ${CYAN}👥 Set group${NC}"
+echo -e "   ${CYAN}⚙️ Settings${NC} · ${CYAN}📝 Custom Msg${NC} · ${CYAN}💧 Liquidity${NC} · ${CYAN}🔘 Buy/Sell buttons${NC}"
+echo -e "   ${CYAN}👁 Preview${NC} · ${CYAN}🔄 Refresh${NC}"
+echo ""
+echo -e "  ${BOLD}Extras:${NC}"
+echo -e "   · ${CYAN}📝 Custom Msg${NC} customizes the whole post — header, body (per merchant), footer"
+echo -e "   · ${CYAN}🚪 Del Join/Left msgs${NC} (in ⚙️ Settings) removes \"X joined/left the group\" notices"
+echo -e "     — the bot must be a group admin with the ${DIM}Delete messages${NC} permission"
+echo -e "   · ⚙️ Settings also has auto-delete timers, liquidity and Buy/Sell buttons"
 echo ""
 echo -e "  ${BOLD}Useful commands:${NC}"
 if is_systemd; then
