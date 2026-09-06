@@ -1,4 +1,4 @@
-import os, sys, json, asyncio, logging, argparse, signal
+import os, sys, json, asyncio, logging, argparse, signal, time
 from dataclasses import asdict
 from pathlib import Path
 import httpx
@@ -40,7 +40,6 @@ def ask(q, default=None, check=None):
         print("  ❌ Invalid, try again.")
 
 def env_or_cli(name_envs, cli_val, default=None):
-    # name_envs: list of env var names to try
     for n in name_envs:
         v = os.getenv(n)
         if v: return v.strip()
@@ -51,7 +50,6 @@ def setup_interactive(existing=None):
     print("\n🤖 P2P Price Bot — first-time setup\n" + "-" * 40)
     print("  Get token from @BotFather → /newbot")
     print("  Get your ID from @userinfobot\n")
-    # prefill from env/cli/existing
     def prefill(key, envs, cli_v, fallback):
         if existing and existing.get(key): return str(existing[key])
         v = env_or_cli(envs, cli_v, None)
@@ -75,7 +73,6 @@ def setup_interactive(existing=None):
     return cfg
 
 def load_config():
-    # 1. try file
     file_cfg = {}
     if CONFIG.exists():
         try: file_cfg = json.loads(CONFIG.read_text())
@@ -83,18 +80,14 @@ def load_config():
             log.warning("config.json unreadable: %s — will recreate", e)
             file_cfg = {}
 
-    # 2. overrides from env/cli (highest priority)
-    #    If env provides token+admins we treat it as authoritative and persist to file
     env_token = env_or_cli(["BOT_TOKEN","TELEGRAM_BOT_TOKEN","TOKEN"], CLI.token)
     env_admins = env_or_cli(["ADMIN_IDS","ADMINS"], CLI.admins)
     env_asset = env_or_cli(["ASSET"], CLI.asset)
     env_fiat = env_or_cli(["FIAT"], CLI.fiat)
     env_interval = env_or_cli(["INTERVAL"], CLI.interval)
 
-    # If CLI --setup requested, force interactive (prefilled from env/file)
     if CLI.setup:
         merged = dict(file_cfg)
-        # pre-apply env/cli so wizard shows them as defaults
         if env_token: merged["token"] = env_token
         if env_admins: merged["admins"] = env_admins
         if env_asset: merged["asset"] = env_asset.upper()
@@ -102,7 +95,6 @@ def load_config():
         if env_interval: merged["interval"] = int(str(env_interval).strip())
         return setup_interactive(merged)
 
-    # If file missing but env provides minimum (token+admins) → create without prompting
     if not file_cfg and env_token and env_admins:
         log.info("Creating config.json from environment variables")
         cfg = {
@@ -112,7 +104,6 @@ def load_config():
             "fiat": (env_fiat or "USD").upper(),
             "interval": int(str(env_interval or "60").strip()),
         }
-        # validate
         if ":" not in cfg["token"]:
             log.error("BOT_TOKEN invalid (missing ':')")
             sys.exit(1)
@@ -121,7 +112,6 @@ def load_config():
         except: pass
         return cfg
 
-    # If file exists, apply env overrides (env wins, and we persist)
     if file_cfg:
         dirty = False
         if env_token and env_token != file_cfg.get("token"):
@@ -141,7 +131,6 @@ def load_config():
             except: pass
         return file_cfg
 
-    # No file, no env → interactive if TTY, else error
     if sys.stdin.isatty():
         return setup_interactive(file_cfg)
     else:
@@ -165,27 +154,74 @@ if ":" not in TOKEN:
     sys.exit(1)
 
 # ── state ──
+DEFAULT_SETTINGS = {
+    "show_liquidity": False,
+    "show_buttons": True,
+    "custom_header": "",
+    "custom_footer": "",
+    "auto_delete": True,  # delete previous group message on new post
+    "delete_after_hours": 24  # auto delete after 24h
+}
+
 def load():
-    try: return json.loads(DB.read_text())
-    except FileNotFoundError: return {"group": None, "auto": False, "merchants": {}, "last": {}}
+    try:
+        data = json.loads(DB.read_text())
+    except FileNotFoundError:
+        data = {"group": None, "auto": False, "merchants": {}, "last": {}, "settings": DEFAULT_SETTINGS.copy(), "last_msg_id": None, "last_msg_time": None}
     except Exception as e:
         log.warning("data.json unreadable: %s — resetting", e)
-        return {"group": None, "auto": False, "merchants": {}, "last": {}}
+        data = {"group": None, "auto": False, "merchants": {}, "last": {}, "settings": DEFAULT_SETTINGS.copy(), "last_msg_id": None, "last_msg_time": None}
+    # migration: ensure keys exist
+    if "settings" not in data or not isinstance(data["settings"], dict):
+        data["settings"] = DEFAULT_SETTINGS.copy()
+    for k, v in DEFAULT_SETTINGS.items():
+        if k not in data["settings"]:
+            data["settings"][k] = v
+    if "last" not in data:
+        data["last"] = {}
+    if "merchants" not in data:
+        data["merchants"] = {}
+    if "auto" not in data:
+        data["auto"] = False
+    if "group" not in data:
+        data["group"] = None
+    if "last_msg_id" not in data:
+        data["last_msg_id"] = None
+    if "last_msg_time" not in data:
+        data["last_msg_time"] = None
+    return data
+
 def save(): 
     DB.write_text(json.dumps(state, indent=1))
     try: os.chmod(DB, 0o600)
     except: pass
+
 state = load()
 merchants = lambda: [Merchant(**m) for m in state["merchants"].values()]
 is_admin = lambda u: u.effective_user and u.effective_user.id in ADMINS
 fmt = lambda p: f"{p:.4f}".rstrip("0").rstrip(".") if p is not None else "—"
 
+def fmt_amount(a):
+    if a is None:
+        return None
+    try:
+        if a >= 1000:
+            s = f"{a:,.2f}"
+        elif a >= 1:
+            s = f"{a:.4f}".rstrip("0").rstrip(".")
+        else:
+            s = f"{a:.6f}".rstrip("0").rstrip(".")
+        return s
+    except:
+        return str(a)
+
+def get_settings():
+    return state.get("settings", DEFAULT_SETTINGS)
+
 # ── panel ──
 BOT_USERNAME = None  # filled in post_init
 
 def set_group_button():
-    # One click: opens Telegram's "choose a group" picker, adds the bot, and the
-    # group is registered automatically (via /start setgroup + my_chat_member).
     label = "👥 Change group" if state["group"] else "👥 Set group"
     if BOT_USERNAME:
         return B(label, url=f"https://t.me/{BOT_USERNAME}?startgroup=setgroup")
@@ -193,10 +229,36 @@ def set_group_button():
 
 def panel():
     a = state["auto"]
-    return KB([[B("📊 Post prices now", callback_data="post"),
-                B(f"{'🟢' if a else '🔴'} Auto: {'ON' if a else 'OFF'}", callback_data="auto")],
-               [B("📋 Merchants", callback_data="list"), set_group_button()],
-               [B("🔄 Refresh", callback_data="panel")]])
+    s = get_settings()
+    liq_icon = "💧"
+    return KB([
+        [B("📊 Post prices now", callback_data="post"),
+         B(f"{'🟢' if a else '🔴'} Auto: {'ON' if a else 'OFF'}", callback_data="auto")],
+        [B("📋 Merchants", callback_data="list"), set_group_button()],
+        [B("⚙️ Settings", callback_data="settings"), B("📝 Custom Msg", callback_data="custom_menu")],
+        [B(f"{liq_icon} Liquidity: {'ON' if s.get('show_liquidity') else 'OFF'}", callback_data="toggle_liquidity"),
+         B(f"🔘 Buttons: {'ON' if s.get('show_buttons') else 'OFF'}", callback_data="toggle_buttons")],
+        [B("👁 Preview", callback_data="preview"), B("🔄 Refresh", callback_data="panel")]
+    ])
+
+def settings_kb():
+    s = get_settings()
+    return KB([
+        [B(f"💧 Liquidity: {'ON ✅' if s.get('show_liquidity') else 'OFF ❌'}", callback_data="toggle_liquidity"),
+         B(f"🔘 Buy/Sell Buttons: {'ON ✅' if s.get('show_buttons') else 'OFF ❌'}", callback_data="toggle_buttons")],
+        [B(f"🗑 Auto-delete prev: {'ON ✅' if s.get('auto_delete') else 'OFF ❌'}", callback_data="toggle_autodelete"),
+         B(f"⏰ Delete after {s.get('delete_after_hours',24)}h", callback_data="toggle_delete_hours")],
+        [B("📝 Edit Header", callback_data="edit_header"), B("📝 Edit Footer", callback_data="edit_footer")],
+        [B("🗑 Clear Custom Msg", callback_data="clear_custom"), B("👁 Preview", callback_data="preview")],
+        [B("⬅️ Back", callback_data="panel")]
+    ])
+
+def custom_menu_kb():
+    return KB([
+        [B("📝 Edit Header", callback_data="edit_header"), B("📝 Edit Footer", callback_data="edit_footer")],
+        [B("🗑 Clear Custom", callback_data="clear_custom"), B("👁 Preview", callback_data="preview")],
+        [B("⬅️ Back", callback_data="panel")]
+    ])
 
 def group_label():
     if not state["group"]: return None
@@ -205,9 +267,67 @@ def group_label():
 
 def panel_text():
     g = group_label() or "not set — tap 👥 Set group below"
-    return (f"🤖 <b>P2P Price Bot</b>\nGroup: <code>{g}</code>\n"
-            f"Merchants: {len(state['merchants'])} · Pair: {ASSET}/{FIAT} · every {INTERVAL}s\n\n"
-            f"➕ <b>Paste a merchant's public URL here to add it.</b>")
+    s = get_settings()
+    liq = "ON" if s.get("show_liquidity") else "OFF"
+    btns = "ON" if s.get("show_buttons") else "OFF"
+    autodel = "ON" if s.get("auto_delete") else "OFF"
+    header = s.get("custom_header") or "(default)"
+    footer = s.get("custom_footer") or "(none)"
+    header_short = (header[:60] + "…") if len(header) > 60 else header
+    footer_short = (footer[:60] + "…") if len(footer) > 60 else footer
+    last_msg = f"Last msg: {state.get('last_msg_id')}" if state.get('last_msg_id') else "No group msg yet"
+    return (
+        f"🤖 <b>P2P Price Bot</b>\n"
+        f"Group: <code>{g}</code>\n"
+        f"Merchants: {len(state['merchants'])} · Pair: {ASSET}/{FIAT} · every {INTERVAL}s\n"
+        f"💧 Liquidity: <b>{liq}</b> · 🔘 Buttons: <b>{btns}</b> · 🗑 AutoDel: <b>{autodel}</b>\n"
+        f"📝 Header: <code>{header_short}</code>\n"
+        f"📝 Footer: <code>{footer_short}</code>\n"
+        f"{last_msg}\n\n"
+        f"➕ <b>Paste a merchant's public URL here to add it.</b>\n"
+        f"Use ⚙️ Settings to toggle liquidity/buttons and custom message."
+    )
+
+def settings_text():
+    s = get_settings()
+    liq = "ON ✅" if s.get("show_liquidity") else "OFF ❌"
+    btns = "ON ✅" if s.get("show_buttons") else "OFF ❌"
+    autodel = "ON ✅" if s.get("auto_delete") else "OFF ❌"
+    del_hours = s.get("delete_after_hours", 24)
+    header = s.get("custom_header") or "<i>(default: 📊 P2P {ASSET}/{FIAT})</i>"
+    footer = s.get("custom_footer") or "<i>(none)</i>"
+    return (
+        f"⚙️ <b>Settings</b>\n\n"
+        f"💧 Show liquidity amount: <b>{liq}</b>\n"
+        f"   When ON, shows available amount next to price.\n\n"
+        f"🔘 Show Buy/Sell buttons in group: <b>{btns}</b>\n"
+        f"   When ON, group message includes Buy/Sell URL buttons.\n\n"
+        f"🗑 Auto-delete previous message: <b>{autodel}</b>\n"
+        f"   When ON, deletes previous price message on refresh/update.\n\n"
+        f"⏰ Auto-delete after: <b>{del_hours}h</b>\n"
+        f"   Message will be deleted after {del_hours} hours (0 = never).\n\n"
+        f"📝 Custom Header:\n{header}\n\n"
+        f"📝 Custom Footer:\n{footer}\n\n"
+        f"You can use placeholders: <code>{{ASSET}}</code>, <code>{{FIAT}}</code>, <code>{{asset}}</code>, <code>{{fiat}}</code>\n"
+        f"HTML allowed: &lt;b&gt;, &lt;i&gt;, &lt;code&gt;, &lt;a&gt; etc."
+    )
+
+def custom_menu_text():
+    s = get_settings()
+    header = s.get("custom_header") or "<i>(default)</i>"
+    footer = s.get("custom_footer") or "<i>(none)</i>"
+    return (
+        f"📝 <b>Custom Message</b>\n\n"
+        f"This custom text will appear in the group post.\n\n"
+        f"<b>Current Header:</b>\n{header}\n\n"
+        f"<b>Current Footer:</b>\n{footer}\n\n"
+        f"Tap Edit to change. You can use:\n"
+        f"• <code>{{ASSET}}</code> / <code>{{FIAT}}</code>\n"
+        f"• HTML formatting\n"
+        f"• Send /cancel to abort editing\n\n"
+        f"Example header:\n<code>📊 P2P {{ASSET}}/{{FIAT}} - Best Rates 🔥</code>\n"
+        f"Example footer:\n<code>⚡️ Updated every {INTERVAL}s | Contact @youradmin</code>"
+    )
 
 def _set_group(chat):
     state["group"] = chat.id
@@ -223,7 +343,6 @@ async def notify_admins(bot, text):
 async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     chat = u.effective_chat
     if chat.type in ("group", "supergroup"):
-        # /start setgroup arrives when the bot is added via the 👥 Set group button
         if c.args and c.args[0] == "setgroup":
             if not is_admin(u): return
             _set_group(chat)
@@ -242,7 +361,6 @@ async def setgroup(u: Update, c):
     await u.message.reply_text("✅ This group will receive price updates.")
 
 async def on_my_chat_member(u: Update, c):
-    """Auto-register the group when an admin adds the bot to it (no command needed)."""
     m = u.my_chat_member
     chat = m.chat
     if chat.type not in ("group", "supergroup"): return
@@ -257,17 +375,53 @@ async def on_my_chat_member(u: Update, c):
         state["group"] = None; state["group_title"] = ""; save()
         await notify_admins(c.bot, f"⚠️ Bot was removed from <b>{chat.title}</b> — group unset.")
 
-# ── add merchant by pasting URL ──
-async def on_text(u: Update, c):
+# ── custom message helpers ──
+def apply_template(text: str) -> str:
+    if not text:
+        return ""
+    return (text
+            .replace("{ASSET}", ASSET).replace("{FIAT}", FIAT)
+            .replace("{asset}", ASSET.lower()).replace("{fiat}", FIAT.lower())
+            .replace("{Asset}", ASSET.title()).replace("{Fiat}", FIAT.title())
+            .replace("{PAIR}", f"{ASSET}/{FIAT}").replace("{pair}", f"{ASSET}/{FIAT}"))
+
+# ── add merchant by pasting URL / handle custom msg input ──
+async def on_text(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if not is_admin(u) or u.effective_chat.type != "private": return
-    m = parse_url(u.message.text, ASSET, FIAT)
-    if not m: return await u.message.reply_text("❌ Not a supported merchant URL (Binance / Bybit / OKX / Bitget).")
+    txt = u.message.text.strip()
+
+    awaiting = c.user_data.get("awaiting_custom")
+    if awaiting in ("header", "footer"):
+        if txt.lower() == "/cancel":
+            c.user_data.pop("awaiting_custom", None)
+            await u.message.reply_text("❌ Cancelled.", reply_markup=panel())
+            return
+        if awaiting == "header":
+            state["settings"]["custom_header"] = txt
+        else:
+            state["settings"]["custom_footer"] = txt
+        save()
+        c.user_data.pop("awaiting_custom", None)
+        await u.message.reply_html(f"✅ Custom {awaiting} saved:\n<code>{txt[:500]}</code>", reply_markup=panel())
+        await u.message.reply_html(panel_text(), reply_markup=panel())
+        return
+
+    m = parse_url(txt, ASSET, FIAT)
+    if not m:
+        return await u.message.reply_text("❌ Not a supported merchant URL (Binance / Bybit / OKX / Bitget).   /start")
     msg = await u.message.reply_text("⏳ Checking merchant…")
     async with httpx.AsyncClient(headers=HEADERS, timeout=15) as cl:
         r = await fetch(cl, m)
     state["merchants"][m.key] = asdict(m); save()
+    extra = ""
+    s = get_settings()
+    if s.get("show_liquidity"):
+        if r.get("sell_amount") is not None:
+            extra += f"\nSell liq: {fmt_amount(r['sell_amount'])} {m.asset}"
+        if r.get("buy_amount") is not None:
+            extra += f"\nBuy liq: {fmt_amount(r['buy_amount'])} {m.asset}"
     await msg.edit_text(f"✅ Added {ICON[m.exchange]} {m.exchange.title()} · {m.nickname or m.merchant_id}\n"
-                        f"Sell: {fmt(r['sell'])} · Buy: {fmt(r['buy'])}")
+                        f"Sell: {fmt(r['sell'])} · Buy: {fmt(r['buy'])}{extra}")
     await u.message.reply_html(panel_text(), reply_markup=panel())
 
 # ── prices ──
@@ -282,23 +436,129 @@ async def get_prices():
     save(); return out
 
 def report(prices):
-    lines = [f"📊 <b>P2P {ASSET}/{FIAT}</b>\n"]
+    s = get_settings()
+    custom_header = s.get("custom_header", "").strip()
+    if custom_header:
+        header_raw = apply_template(custom_header)
+        lines = [header_raw, ""]
+    else:
+        lines = [f"📊 <b>P2P {ASSET}/{FIAT}</b>\n"]
+
     for m in merchants():
-        r = prices[m.key]
+        r = prices.get(m.key)
+        if not r:
+            continue
+        nick_display = m.nickname or m.merchant_id
         lines.append(f"{ICON[m.exchange]} <b>{m.exchange.title()}</b> · "
-                     f"<a href=\"{m.url}\">{m.nickname or m.merchant_id}</a>")
-        if r["error"]: lines.append(f"   ⚠️ {r['error']}\n"); continue
-        lines.append(f"   🔴 Best SELL (you buy): <b>{fmt(r['sell'])}</b>\n"
-                     f"   🟢 Best BUY  (you sell): <b>{fmt(r['buy'])}</b>\n")
-    return "\n".join(lines)
+                     f"<a href=\"{m.url}\">{nick_display}</a>")
+        if r.get("error"):
+            lines.append(f"   ⚠️ {r['error']}\n")
+            continue
+        sell_price = fmt(r.get("sell"))
+        buy_price = fmt(r.get("buy"))
+        sell_amt = fmt_amount(r.get("sell_amount")) if s.get("show_liquidity") else None
+        buy_amt = fmt_amount(r.get("buy_amount")) if s.get("show_liquidity") else None
+
+        sell_line = f"   🔴 Best SELL (you buy): <b>{sell_price}</b>"
+        if sell_amt:
+            sell_line += f"  💧 {sell_amt} {m.asset}"
+        buy_line = f"   🟢 Best BUY  (you sell): <b>{buy_price}</b>"
+        if buy_amt:
+            buy_line += f"  💧 {buy_amt} {m.asset}"
+
+        lines.append(sell_line)
+        lines.append(buy_line + "\n")
+
+    custom_footer = s.get("custom_footer", "").strip()
+    if custom_footer:
+        lines.append(apply_template(custom_footer))
+
+    return "\n".join(lines).strip()
+
+def report_keyboard(prices):
+    s = get_settings()
+    if not s.get("show_buttons"):
+        return None
+    rows = []
+    for m in merchants():
+        r = prices.get(m.key)
+        if not r or not m.url:
+            continue
+        nick = (m.nickname or m.merchant_id)[:14]
+        row = []
+        sell = r.get("sell")
+        buy = r.get("buy")
+        if sell is not None:
+            label = f"🔴 SELL {fmt(sell)} {nick}"
+            if len(label) > 60:
+                label = f"🔴 SELL {fmt(sell)}"
+            row.append(B(label, url=m.url))
+        if buy is not None:
+            label = f"🟢 BUY {fmt(buy)} {nick}"
+            if len(label) > 60:
+                label = f"🟢 BUY {fmt(buy)}"
+            row.append(B(label, url=m.url))
+        if row:
+            rows.append(row)
+    if not rows:
+        return None
+    return KB(rows)
+
+# ── deletion helpers ──
+async def delete_last_group_message(bot):
+    """Delete previous price message in group if exists"""
+    gid = state.get("group")
+    mid = state.get("last_msg_id")
+    if not gid or not mid:
+        return False
+    try:
+        await bot.delete_message(chat_id=gid, message_id=mid)
+        log.info(f"Deleted previous group message {mid} in {gid}")
+        state["last_msg_id"] = None
+        state["last_msg_time"] = None
+        save()
+        return True
+    except Exception as e:
+        # message may already be deleted or bot not admin
+        log.debug(f"Could not delete msg {mid}: {e}")
+        # if message not found, clear state to avoid repeated attempts
+        if "not found" in str(e).lower() or "message to delete not found" in str(e).lower() or "BadRequest" in str(type(e)):
+            state["last_msg_id"] = None
+            state["last_msg_time"] = None
+            save()
+        return False
 
 async def post(bot, force=False):
     if not state["group"] or not state["merchants"]: return False
     prices = await get_prices()
-    snap = {k: [v["sell"], v["buy"]] for k, v in prices.items()}
+    s = get_settings()
+    if s.get("show_liquidity"):
+        snap = {k: [v.get("sell"), v.get("buy"), v.get("sell_amount"), v.get("buy_amount")] for k, v in prices.items()}
+    else:
+        snap = {k: [v.get("sell"), v.get("buy")] for k, v in prices.items()}
+    snap["_header"] = s.get("custom_header","")
+    snap["_footer"] = s.get("custom_footer","")
+    snap["_liq"] = s.get("show_liquidity")
+    snap["_btn"] = s.get("show_buttons")
     if not force and snap == state["last"]: return False
     state["last"] = snap; save()
-    await bot.send_message(state["group"], report(prices), parse_mode="HTML", disable_web_page_preview=True)
+
+    # Delete previous message if auto_delete enabled (refresh button or update time)
+    if s.get("auto_delete", True):
+        await delete_last_group_message(bot)
+
+    text = report(prices)
+    kb = report_keyboard(prices)
+    try:
+        sent = await bot.send_message(state["group"], text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
+        # store new message id and time
+        state["last_msg_id"] = sent.message_id
+        state["last_msg_time"] = int(time.time())
+        save()
+        log.info(f"Posted new price message {sent.message_id} to group {state['group']}")
+    except Exception as e:
+        log.warning(f"Failed to post to group: {e}")
+        return False
     return True
 
 async def job(c: ContextTypes.DEFAULT_TYPE):
@@ -306,43 +566,216 @@ async def job(c: ContextTypes.DEFAULT_TYPE):
         try: await post(c.bot)
         except Exception as e: logging.warning("auto post failed: %s", e)
 
+async def cleanup_job(c: ContextTypes.DEFAULT_TYPE):
+    """Delete group message after delete_after_hours (default 24h)"""
+    s = get_settings()
+    hours = s.get("delete_after_hours", 24)
+    if hours <= 0:
+        return  # disabled
+    last_time = state.get("last_msg_time")
+    if not last_time or not state.get("last_msg_id") or not state.get("group"):
+        return
+    now = int(time.time())
+    if now - last_time >= hours * 3600:
+        log.info(f"Message {state['last_msg_id']} is older than {hours}h, auto-deleting")
+        try:
+            await c.bot.delete_message(chat_id=state["group"], message_id=state["last_msg_id"])
+            state["last_msg_id"] = None
+            state["last_msg_time"] = None
+            save()
+        except Exception as e:
+            log.debug(f"Cleanup delete failed: {e}")
+            # clear if not found
+            if "not found" in str(e).lower():
+                state["last_msg_id"] = None
+                state["last_msg_time"] = None
+                save()
+
 # ── buttons ──
 def list_kb():
     rows = [[B(f"❌ {ICON[m.exchange]} {m.exchange.title()} · {m.nickname or m.merchant_id}",
                callback_data=f"del:{m.key}")] for m in merchants()]
     return KB(rows + [[B("⬅️ Back", callback_data="panel")]])
 
-async def on_button(u: Update, c):
+async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
     q = u.callback_query
     if not is_admin(u): return await q.answer()
     d = q.data
+
     if d == "post":
         ok = await post(c.bot, force=True)
         await q.answer("✅ Posted!" if ok else "⚠️ Set group (/setgroup) and add merchants first", show_alert=not ok)
+
     elif d == "auto":
-        state["auto"] = not state["auto"]; save(); await q.answer()
+        state["auto"] = not state["auto"]; save(); await q.answer(f"Auto {'ON' if state['auto'] else 'OFF'}")
+
     elif d == "setgroup_help":
         return await q.answer("Add the bot to your group, then send /setgroup there.", show_alert=True)
+
     elif d == "list":
         await q.answer()
         return await q.edit_message_text("📋 <b>Merchants</b> — tap to remove" if state["merchants"]
                                          else "📋 No merchants yet. Paste a URL to add one.",
                                          parse_mode="HTML", reply_markup=list_kb())
+
     elif d.startswith("del:"):
         state["merchants"].pop(d[4:], None); state["last"].pop(d[4:], None); save()
         await q.answer("🗑 Removed")
-        return await q.edit_message_text("📋 <b>Merchants</b> — tap to remove", parse_mode="HTML", reply_markup=list_kb())
+        return await q.edit_message_text("📋 <b>Merchants</b> — tap to remove" if state["merchants"]
+                                         else "📋 No merchants yet.",
+                                         parse_mode="HTML", reply_markup=list_kb())
+
+    elif d == "settings":
+        await q.answer()
+        return await q.edit_message_text(settings_text(), parse_mode="HTML", reply_markup=settings_kb())
+
+    elif d == "custom_menu":
+        await q.answer()
+        return await q.edit_message_text(custom_menu_text(), parse_mode="HTML", reply_markup=custom_menu_kb())
+
+    elif d == "toggle_liquidity":
+        state["settings"]["show_liquidity"] = not state["settings"].get("show_liquidity", False)
+        save()
+        await q.answer(f"Liquidity {'ON' if state['settings']['show_liquidity'] else 'OFF'}")
+        try:
+            if "Settings" in q.message.text_html or "Settings" in (q.message.text or ""):
+                return await q.edit_message_text(settings_text(), parse_mode="HTML", reply_markup=settings_kb())
+        except:
+            pass
+
+    elif d == "toggle_buttons":
+        state["settings"]["show_buttons"] = not state["settings"].get("show_buttons", True)
+        save()
+        await q.answer(f"Buttons {'ON' if state['settings']['show_buttons'] else 'OFF'}")
+        try:
+            if "Settings" in (q.message.text or "") or "⚙️" in (q.message.text or ""):
+                return await q.edit_message_text(settings_text(), parse_mode="HTML", reply_markup=settings_kb())
+        except:
+            pass
+
+    elif d == "toggle_autodelete":
+        state["settings"]["auto_delete"] = not state["settings"].get("auto_delete", True)
+        save()
+        await q.answer(f"Auto-delete {'ON' if state['settings']['auto_delete'] else 'OFF'}")
+        try:
+            return await q.edit_message_text(settings_text(), parse_mode="HTML", reply_markup=settings_kb())
+        except:
+            pass
+
+    elif d == "toggle_delete_hours":
+        # cycle through 0, 6, 12, 24, 48
+        options = [0, 6, 12, 24, 48]
+        cur = state["settings"].get("delete_after_hours", 24)
+        try:
+            idx = options.index(cur)
+            nxt = options[(idx + 1) % len(options)]
+        except:
+            nxt = 24
+        state["settings"]["delete_after_hours"] = nxt
+        save()
+        await q.answer(f"Delete after {nxt}h" if nxt else "Never auto-delete")
+        try:
+            return await q.edit_message_text(settings_text(), parse_mode="HTML", reply_markup=settings_kb())
+        except:
+            pass
+
+    elif d == "edit_header":
+        c.user_data["awaiting_custom"] = "header"
+        await q.answer()
+        return await q.edit_message_text(
+            "📝 <b>Send new custom HEADER now</b>\n\n"
+            "You can use:\n"
+            f"• <code>{{ASSET}}</code> = {ASSET}\n"
+            f"• <code>{{FIAT}}</code> = {FIAT}\n"
+            "• HTML tags like &lt;b&gt;bold&lt;/b&gt;\n\n"
+            "Current:\n"
+            f"<code>{state['settings'].get('custom_header') or '(default)'}</code>\n\n"
+            "Send the new header text, or /cancel to abort.",
+            parse_mode="HTML",
+            reply_markup=KB([[B("❌ Cancel", callback_data="cancel_edit")]])
+        )
+
+    elif d == "edit_footer":
+        c.user_data["awaiting_custom"] = "footer"
+        await q.answer()
+        return await q.edit_message_text(
+            "📝 <b>Send new custom FOOTER now</b>\n\n"
+            "You can use:\n"
+            f"• <code>{{ASSET}}</code> = {ASSET}\n"
+            f"• <code>{{FIAT}}</code> = {FIAT}\n"
+            "• HTML tags\n\n"
+            "Current:\n"
+            f"<code>{state['settings'].get('custom_footer') or '(none)'}</code>\n\n"
+            "Send the new footer text, or /cancel to abort.",
+            parse_mode="HTML",
+            reply_markup=KB([[B("❌ Cancel", callback_data="cancel_edit")]])
+        )
+
+    elif d == "clear_custom":
+        state["settings"]["custom_header"] = ""
+        state["settings"]["custom_footer"] = ""
+        save()
+        await q.answer("🗑 Custom message cleared")
+        return await q.edit_message_text(custom_menu_text(), parse_mode="HTML", reply_markup=custom_menu_kb())
+
+    elif d == "cancel_edit":
+        c.user_data.pop("awaiting_custom", None)
+        await q.answer("Cancelled")
+        return await q.edit_message_text(panel_text(), parse_mode="HTML", reply_markup=panel())
+
+    elif d == "preview":
+        await q.answer("Generating preview…")
+        if state["merchants"]:
+            prices = await get_prices()
+        else:
+            prices = {}
+        text = report(prices) if prices else (
+            f"{apply_template(state['settings'].get('custom_header')) or f'📊 P2P {ASSET}/{FIAT}'}\n\n"
+            f"<i>No merchants yet. Add one to see prices.</i>\n\n"
+            f"{apply_template(state['settings'].get('custom_footer')) or ''}"
+        )
+        kb = report_keyboard(prices) if prices else None
+        try:
+            await c.bot.send_message(q.message.chat_id, f"👁 <b>Preview - how it will look in group:</b>\n\n{text}",
+                                     parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
+        except Exception as e:
+            await c.bot.send_message(q.message.chat_id, f"Preview error: {e}\n\n{text[:3000]}", parse_mode="HTML")
+        return
+
+    elif d == "panel":
+        await q.answer()
+
     else:
         await q.answer()
+        return
+
     try: await q.edit_message_text(panel_text(), parse_mode="HTML", reply_markup=panel())
-    except Exception: pass  # unchanged content
+    except Exception: pass
+
+async def cancel_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(u): return
+    if c.user_data.get("awaiting_custom"):
+        c.user_data.pop("awaiting_custom")
+        await u.message.reply_text("❌ Editing cancelled.", reply_markup=panel())
+    else:
+        await u.message.reply_text("Nothing to cancel.", reply_markup=panel())
+
+async def preview_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(u) or u.effective_chat.type != "private": return
+    if state["merchants"]:
+        prices = await get_prices()
+        text = report(prices)
+        kb = report_keyboard(prices)
+    else:
+        text = f"{apply_template(state['settings'].get('custom_header')) or f'📊 P2P {ASSET}/{FIAT}'}\n\n<i>No merchants yet.</i>"
+        kb = None
+    await u.message.reply_html(text, reply_markup=kb, disable_web_page_preview=True)
 
 async def error_handler(update, context):
     log.warning("Update %s caused error %s", update, context.error)
 
 # ── run ──
 def main():
-    # graceful shutdown for systemd
     for sig in (signal.SIGINT, signal.SIGTERM):
         try: signal.signal(sig, lambda *_: sys.exit(0))
         except: pass
@@ -356,11 +789,15 @@ def main():
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("setgroup", setgroup))
+    app.add_handler(CommandHandler("cancel", cancel_cmd))
+    app.add_handler(CommandHandler("preview", preview_cmd))
     app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(error_handler)
     app.job_queue.run_repeating(job, interval=INTERVAL, first=5)
+    # cleanup job: check every 10 minutes if message older than 24h
+    app.job_queue.run_repeating(cleanup_job, interval=600, first=60)
     print(f"🚀 Bot running · {ASSET}/{FIAT} · every {INTERVAL}s · Ctrl+C to stop")
     print(f"   Admins: {', '.join(map(str, ADMINS))} · Group: {state['group'] or 'not set'} · Merchants: {len(state['merchants'])}")
     if not state["group"]:
