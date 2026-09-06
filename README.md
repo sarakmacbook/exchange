@@ -1,3 +1,4 @@
+## ⚡ One-Click Install
 
 ```bash
 wget https://raw.githubusercontent.com/sarakmacbook/exchange/refs/heads/main/install.sh
@@ -5,6 +6,15 @@ wget https://raw.githubusercontent.com/sarakmacbook/exchange/refs/heads/main/ins
 chmod +x install.sh
 
 ./install.sh
+```
+
+## ⚡ One-Click Uninstall
+```bash
+https://raw.githubusercontent.com/sarakmacbook/exchange/refs/heads/main/uninstall.sh
+
+chmod +x uninstall.sh
+
+./uninstall.sh
 ```
 
 
