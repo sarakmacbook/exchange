@@ -14,18 +14,28 @@ Pick the installer that matches your machine — all three ask for your **bot to
 | `install-docker.sh` | Any machine **with Docker**, incl. macOS | Docker Compose container (`restart: unless-stopped`) |
 | `install-local.sh` | **macOS / Linux without systemd / WSL** | venv + nohup + launchd (macOS) or cron `@reboot` autostart |
 
+> **curl or wget — your choice.** Every one-liner below is shown with both `curl` and `wget`; they are interchangeable. Inside the scripts the same applies: downloads automatically use **curl → wget → python3**, whichever exists on the box, and `git` is optional (a tarball is fetched instead when git is missing). Force a specific tool with `DOWNLOADER=wget`.
+
 ### Option A — VPS with systemd (recommended)
 
 Paste this on a fresh Ubuntu VPS (20.04 / 22.04 / 24.04):
 
 ```bash
+# with curl
 curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh | bash
+
+# with wget
+wget -qO- https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh | bash
 ```
 
 ### Option B — Docker (macOS, Windows, any Linux)
 
 ```bash
+# with curl
 curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-docker.sh | bash
+
+# with wget
+wget -qO- https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-docker.sh | bash
 ```
 
 The script checks/installs Docker, creates `config.json` + `.env`, and runs `docker compose up -d --build`.
@@ -33,14 +43,49 @@ The script checks/installs Docker, creates `config.json` + `.env`, and runs `doc
 ### Option C — Local / no systemd (laptops, WSL, shared hosting)
 
 ```bash
+# with curl
 curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-local.sh | bash
+
+# with wget
+wget -qO- https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-local.sh | bash
 ```
+
+<details>
+<summary>No curl and no wget? (python3 / PowerShell / manual)</summary>
+
+**python3 (any Linux/macOS with Python 3):**
+
+```bash
+python3 -c "import urllib.request as u;print(u.urlopen('https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-local.sh').read().decode())" | bash
+```
+
+**Windows PowerShell** (then run it with WSL or Git Bash):
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-local.sh -OutFile install-local.sh
+bash install-local.sh
+```
+
+**Fully manual — download the archive, no git needed:**
+
+```bash
+mkdir -p ~/exchange && wget -qO- https://codeload.github.com/sarakmacbook/exchange/tar.gz/refs/heads/main | tar -xz --strip-components=1 -C ~/exchange
+cd ~/exchange && bash install-local.sh        # or: sudo bash install.sh
+```
+
+(With curl instead of wget: `curl -fsSL https://codeload.github.com/sarakmacbook/exchange/tar.gz/refs/heads/main | tar -xz --strip-components=1 -C ~/exchange`)
+</details>
 
 <details>
 <summary>No prompts (for automation) — any installer</summary>
 
 ```bash
+# curl
 curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh | bash -s -- \
+  --token "123456:ABC-your-token" --admins "123456789" --asset USDT --fiat USD --interval 60
+
+# wget
+wget -qO- https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh | bash -s -- \
   --token "123456:ABC-your-token" --admins "123456789" --asset USDT --fiat USD --interval 60
 ```
 </details>
@@ -118,6 +163,8 @@ bash install-local.sh --uninstall     # stop + remove autostart (keep data)
 ```bash
 # systemd install
 curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/uninstall.sh | bash
+# …or the same with wget
+wget -qO- https://raw.githubusercontent.com/sarakmacbook/exchange/main/uninstall.sh | bash
 # docker install
 bash install-docker.sh --down
 # local install
@@ -139,6 +186,8 @@ bash install-local.sh --uninstall
 | `Dockerfile` / `docker-compose.yml` | Docker alternative |
 | `config.json` | Auto-created: token, admins, pair, interval |
 | `data.json` | Auto-created: group, merchants, last prices |
+
+All three installers download what they need with **curl, wget or python3** (first one found — override with `DOWNLOADER=wget`), and fall back to the GitHub tarball when `git` is not installed.
 
 ## 📄 License
 

@@ -5,8 +5,11 @@ set -euo pipefail
 #  P2P Merchant Price Bot — One-Click Docker Installer
 #  Ubuntu / Debian / macOS / any machine with Docker
 #
-#  Usage:
-#    curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-docker.sh | bash -s -- --token 123:ABC --admins 123456
+#  Usage (curl or wget — whichever your machine has):
+#    curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-docker.sh | bash
+#    wget -qO-  https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-docker.sh | bash
+#    curl -fsSL .../install-docker.sh | bash -s -- --token 123:ABC --admins 123456
+#    wget -qO-  .../install-docker.sh | bash -s -- --token 123:ABC --admins 123456
 #    git clone https://github.com/sarakmacbook/exchange.git && cd exchange && bash install-docker.sh
 #    bash install-docker.sh --token 123:ABC --admins 123456,789012 --asset USDT --fiat USD
 #    bash install-docker.sh --reconfigure   # re-run setup wizard
@@ -16,6 +19,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/sarakmacbook/exchange.git"
 RAW_URL="https://raw.githubusercontent.com/sarakmacbook/exchange/main"
+TARBALL_URL="https://codeload.github.com/sarakmacbook/exchange/tar.gz/refs/heads/main"
 DEFAULT_DIR="$HOME/exchange"
 COMPOSE_FILE="docker-compose.yml"
 
@@ -66,8 +70,13 @@ Options:
 Env alternatives: BOT_TOKEN, ADMIN_IDS, ASSET, FIAT, INTERVAL
 
 Examples:
+  curl -fsSL $RAW_URL/install-docker.sh | bash
+  wget -qO-  $RAW_URL/install-docker.sh | bash
   bash install-docker.sh --token 123:ABC --admins 123456
   bash install-docker.sh --asset BTC --fiat EUR --interval 30
+
+Downloads use curl, wget or python3 — whichever is installed
+(force one with:  DOWNLOADER=wget bash install-docker.sh ...)
 EOF
 }
 
@@ -92,6 +101,65 @@ done
 
 # ── helpers ──
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# ── download helper: curl → wget → python3 (uses whichever exists) ──
+# Override with:  DOWNLOADER=wget bash install-docker.sh
+DOWNLOADER="${DOWNLOADER:-}"
+DOWNLOADER_OVERRIDE="$DOWNLOADER"
+detect_downloader() {
+  if [[ -n "$DOWNLOADER_OVERRIDE" ]]; then
+    if need_cmd "$DOWNLOADER_OVERRIDE"; then DOWNLOADER="$DOWNLOADER_OVERRIDE"; return 0; fi
+    warn "DOWNLOADER=$DOWNLOADER_OVERRIDE requested but not installed — falling back."
+    DOWNLOADER_OVERRIDE=""
+  fi
+  if   need_cmd curl;    then DOWNLOADER="curl"
+  elif need_cmd wget;    then DOWNLOADER="wget"
+  elif need_cmd python3; then DOWNLOADER="python3"
+  else DOWNLOADER=""; return 1
+  fi
+}
+
+# fetch URL DEST — download URL into file DEST
+fetch() {
+  local url="$1" dest="$2"
+  detect_downloader || { err "No downloader found — install curl, wget or python3."; return 1; }
+  case "$DOWNLOADER" in
+    curl)
+      curl -fsSL --connect-timeout 15 --retry 3 "$url" -o "$dest" ;;
+    wget)
+      wget -q --timeout=20 --tries=3 -O "$dest" "$url" ;;
+    python3)
+      python3 - "$url" "$dest" <<'PY'
+import shutil, sys, urllib.request
+url, dest = sys.argv[1], sys.argv[2]
+req = urllib.request.Request(url, headers={"User-Agent": "p2p-bot-installer"})
+with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as fh:
+    shutil.copyfileobj(resp, fh)
+PY
+      ;;
+    *)
+      return 1 ;;
+  esac
+}
+
+# fetch_repo DEST — download the repo tarball and unpack it into DEST
+# (fallback when git is missing or the clone fails)
+fetch_repo() {
+  local dest="$1" tmp
+  need_cmd tar || { warn "tar not found — cannot unpack the source tarball."; return 1; }
+  tmp="$(mktemp)" || return 1
+  if fetch "$TARBALL_URL" "$tmp"; then
+    mkdir -p "$dest"
+    if tar -xzf "$tmp" -C "$dest" --strip-components=1; then
+      rm -f "$tmp"
+      ok "Source downloaded via ${DOWNLOADER} tarball → $dest"
+      return 0
+    fi
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
 have_sudo() { [[ $EUID -eq 0 ]] || sudo -n true 2>/dev/null || sudo -v 2>/dev/null; }
 SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 
@@ -102,7 +170,7 @@ if [[ -f "$SCRIPT_DIR/bot.py" && -f "$SCRIPT_DIR/$COMPOSE_FILE" ]]; then
   HAS_LOCAL_REPO=1
 fi
 
-# Reopen stdin from /dev/tty if piped (curl | bash) so prompts work.
+# Reopen stdin from /dev/tty if piped (curl | bash / wget | bash) so prompts work.
 # If there is no controlling TTY, keep stdin as-is (args/env mode).
 if [[ ! -t 0 ]]; then
   exec < /dev/tty 2>/dev/null || true
@@ -131,6 +199,12 @@ elif [[ "$(uname -s)" == "Darwin" ]]; then
   echo "  OS: macOS  arch: $(uname -m)"
 else
   warn "Unknown OS — continuing anyway."
+fi
+
+if detect_downloader; then
+  echo "  Downloader: $DOWNLOADER  (curl / wget / python3 — any of them works)"
+else
+  warn "No curl, wget or python3 found — git clone will be the only way to fetch the source."
 fi
 
 # ── 2. docker ──
@@ -202,9 +276,18 @@ echo "  Install dir: $INSTALL_DIR"
 
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   info "Existing repo found — pulling latest..."
-  git -C "$INSTALL_DIR" pull --ff-only || warn "git pull failed — continuing with existing files."
+  if need_cmd git; then
+    git -C "$INSTALL_DIR" pull --ff-only || warn "git pull failed — continuing with existing files."
+  else
+    warn "git not installed — cannot pull; keeping the files already on disk."
+  fi
 elif [[ -d "$INSTALL_DIR" && -f "$INSTALL_DIR/bot.py" ]]; then
-  info "Existing install dir without git — keeping files."
+  if [[ $DO_UPDATE -eq 1 ]]; then
+    info "No git repo here — refreshing files from the GitHub archive..."
+    fetch_repo "$INSTALL_DIR" || warn "Refresh failed — continuing with existing files."
+  else
+    info "Existing install dir without git — keeping files."
+  fi
 elif [[ ! -d "$INSTALL_DIR" ]]; then
   if [[ $HAS_LOCAL_REPO -eq 1 && "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
     info "Copying local files to $INSTALL_DIR ..."
@@ -213,15 +296,29 @@ elif [[ ! -d "$INSTALL_DIR" ]]; then
     cp -r "$SCRIPT_DIR"/.git "$INSTALL_DIR"/ 2>/dev/null || true
   else
     info "Cloning $REPO_URL → $INSTALL_DIR ..."
-    git clone "$REPO_URL" "$INSTALL_DIR" || { err "git clone failed."; exit 1; }
+    # git is optional: fall back to the tarball via curl / wget / python3
+    git clone "$REPO_URL" "$INSTALL_DIR" 2>/dev/null || {
+      warn "git clone failed (or git is not installed) — downloading the source archive instead..."
+      mkdir -p "$INSTALL_DIR"
+      fetch_repo "$INSTALL_DIR" || { err "Could not download the source."; exit 1; }
+    }
   fi
 else
   if [[ $HAS_LOCAL_REPO -eq 1 ]]; then
     cp -r "$SCRIPT_DIR"/* "$INSTALL_DIR"/ 2>/dev/null || true
   else
-    git clone "$REPO_URL" "$INSTALL_DIR" 2>/dev/null || { err "git clone failed."; exit 1; }
+    git clone "$REPO_URL" "$INSTALL_DIR" 2>/dev/null || fetch_repo "$INSTALL_DIR" || { err "Could not download the source."; exit 1; }
   fi
 fi
+
+if [[ ! -f "$INSTALL_DIR/bot.py" || ! -f "$INSTALL_DIR/$COMPOSE_FILE" ]]; then
+  err "Source incomplete in $INSTALL_DIR (need bot.py + $COMPOSE_FILE)."
+  echo "  Install git, curl or wget, then re-run — or download manually:"
+  echo "    mkdir -p $INSTALL_DIR"
+  echo "    wget -qO- $TARBALL_URL | tar -xz --strip-components=1 -C $INSTALL_DIR"
+  exit 1
+fi
+
 cd "$INSTALL_DIR"
 
 # ── 4. config / .env ──
@@ -301,6 +398,8 @@ if [[ $NEED_SETUP -eq 1 ]]; then
     echo "  Provide them via flags or env:"
     echo "    bash install-docker.sh --token 123:ABC --admins 123456"
     echo "    BOT_TOKEN=123:ABC ADMIN_IDS=123456 bash install-docker.sh"
+    echo "    curl -fsSL $RAW_URL/install-docker.sh | bash -s -- --token 123:ABC --admins 123456"
+    echo "    wget -qO-  $RAW_URL/install-docker.sh | bash -s -- --token 123:ABC --admins 123456"
     echo ""
     echo "  Or run interactively:  bash install-docker.sh"
     exit 1
@@ -361,7 +460,11 @@ if [[ $DO_DOWN -eq 1 ]]; then
 fi
 
 if [[ $DO_UPDATE -eq 1 ]]; then
-  git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || warn "git pull skipped/failed — rebuilding anyway."
+  if [[ -d "$INSTALL_DIR/.git" ]]; then
+    git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || warn "git pull skipped/failed — rebuilding anyway."
+  else
+    info "No git repo — source already refreshed from the GitHub archive in step 3."
+  fi
   info "Rebuilding image ..."
   "${COMPOSE_BIN[@]}" up -d --build --force-recreate
 else
