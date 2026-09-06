@@ -1,4 +1,4 @@
-import os, sys, json, asyncio, logging, argparse, signal, time
+import os, sys, json, asyncio, logging, argparse, signal, time, re
 from dataclasses import asdict
 from pathlib import Path
 import httpx
@@ -158,9 +158,11 @@ DEFAULT_SETTINGS = {
     "show_liquidity": False,
     "show_buttons": True,
     "custom_header": "",
+    "custom_body": "",     # per-merchant line template for the group post
     "custom_footer": "",
     "auto_delete": True,  # delete previous group message on new post
-    "delete_after_hours": 24  # auto delete after 24h
+    "delete_after_hours": 24,  # auto delete after 24h
+    "delete_join_left": True  # delete Telegram "X joined/left the group" service messages
 }
 
 def load():
@@ -248,16 +250,17 @@ def settings_kb():
          B(f"🔘 Buy/Sell Buttons: {'ON ✅' if s.get('show_buttons') else 'OFF ❌'}", callback_data="toggle_buttons")],
         [B(f"🗑 Auto-delete prev: {'ON ✅' if s.get('auto_delete') else 'OFF ❌'}", callback_data="toggle_autodelete"),
          B(f"⏰ Delete after {s.get('delete_after_hours',24)}h", callback_data="toggle_delete_hours")],
-        [B("📝 Edit Header", callback_data="edit_header"), B("📝 Edit Footer", callback_data="edit_footer")],
-        [B("🗑 Clear Custom Msg", callback_data="clear_custom"), B("👁 Preview", callback_data="preview")],
-        [B("⬅️ Back", callback_data="panel")]
+        [B(f"🚪 Del Join/Left msgs: {'ON ✅' if s.get('delete_join_left', True) else 'OFF ❌'}", callback_data="toggle_joinleft")],
+        [B("📝 Edit Header", callback_data="edit_header"), B("📝 Edit Body", callback_data="edit_body")],
+        [B("📝 Edit Footer", callback_data="edit_footer"), B("🗑 Clear Custom Msg", callback_data="clear_custom")],
+        [B("👁 Preview", callback_data="preview"), B("⬅️ Back", callback_data="panel")]
     ])
 
 def custom_menu_kb():
     return KB([
-        [B("📝 Edit Header", callback_data="edit_header"), B("📝 Edit Footer", callback_data="edit_footer")],
-        [B("🗑 Clear Custom", callback_data="clear_custom"), B("👁 Preview", callback_data="preview")],
-        [B("⬅️ Back", callback_data="panel")]
+        [B("📝 Edit Header", callback_data="edit_header"), B("📝 Edit Body", callback_data="edit_body")],
+        [B("📝 Edit Footer", callback_data="edit_footer"), B("🗑 Clear All Custom", callback_data="clear_custom")],
+        [B("👁 Preview", callback_data="preview"), B("⬅️ Back", callback_data="panel")]
     ])
 
 def group_label():
@@ -271,9 +274,12 @@ def panel_text():
     liq = "ON" if s.get("show_liquidity") else "OFF"
     btns = "ON" if s.get("show_buttons") else "OFF"
     autodel = "ON" if s.get("auto_delete") else "OFF"
+    joinleft = "ON" if s.get("delete_join_left", True) else "OFF"
     header = s.get("custom_header") or "(default)"
+    body = s.get("custom_body") or "(default)"
     footer = s.get("custom_footer") or "(none)"
     header_short = (header[:60] + "…") if len(header) > 60 else header
+    body_short = (body[:60] + "…") if len(body) > 60 else body
     footer_short = (footer[:60] + "…") if len(footer) > 60 else footer
     last_msg = f"Last msg: {state.get('last_msg_id')}" if state.get('last_msg_id') else "No group msg yet"
     return (
@@ -281,11 +287,13 @@ def panel_text():
         f"Group: <code>{g}</code>\n"
         f"Merchants: {len(state['merchants'])} · Pair: {ASSET}/{FIAT} · every {INTERVAL}s\n"
         f"💧 Liquidity: <b>{liq}</b> · 🔘 Buttons: <b>{btns}</b> · 🗑 AutoDel: <b>{autodel}</b>\n"
+        f"🚪 Del Join/Left msgs: <b>{joinleft}</b>\n"
         f"📝 Header: <code>{header_short}</code>\n"
+        f"📝 Body: <code>{body_short}</code>\n"
         f"📝 Footer: <code>{footer_short}</code>\n"
         f"{last_msg}\n\n"
         f"➕ <b>Paste a merchant's public URL here to add it.</b>\n"
-        f"Use ⚙️ Settings to toggle liquidity/buttons and custom message."
+        f"Use ⚙️ Settings to toggle options and 📝 Custom Msg to customize the full post (header, body, footer)."
     )
 
 def settings_text():
@@ -293,8 +301,10 @@ def settings_text():
     liq = "ON ✅" if s.get("show_liquidity") else "OFF ❌"
     btns = "ON ✅" if s.get("show_buttons") else "OFF ❌"
     autodel = "ON ✅" if s.get("auto_delete") else "OFF ❌"
+    joinleft = "ON ✅" if s.get("delete_join_left", True) else "OFF ❌"
     del_hours = s.get("delete_after_hours", 24)
     header = s.get("custom_header") or "<i>(default: 📊 P2P {ASSET}/{FIAT})</i>"
+    body = s.get("custom_body") or "<i>(default: exchange · merchant with sell/buy lines)</i>"
     footer = s.get("custom_footer") or "<i>(none)</i>"
     return (
         f"⚙️ <b>Settings</b>\n\n"
@@ -306,26 +316,39 @@ def settings_text():
         f"   When ON, deletes previous price message on refresh/update.\n\n"
         f"⏰ Auto-delete after: <b>{del_hours}h</b>\n"
         f"   Message will be deleted after {del_hours} hours (0 = never).\n\n"
+        f"🚪 Delete Join/Left messages: <b>{joinleft}</b>\n"
+        f"   When ON, the bot deletes Telegram's \"user joined the group\" and\n"
+        f"   \"user left the group\" service messages in your group.\n"
+        f"   ⚠️ Bot must be a group admin with 'Delete messages' permission.\n\n"
         f"📝 Custom Header:\n{header}\n\n"
+        f"📝 Custom Body (per merchant):\n{body}\n\n"
         f"📝 Custom Footer:\n{footer}\n\n"
-        f"You can use placeholders: <code>{{ASSET}}</code>, <code>{{FIAT}}</code>, <code>{{asset}}</code>, <code>{{fiat}}</code>\n"
+        f"Header/Footer placeholders: <code>{{ASSET}}</code>, <code>{{FIAT}}</code>, <code>{{PAIR}}</code>\n"
+        f"Body placeholders: <code>{{ICON}}</code> <code>{{EXCHANGE}}</code> <code>{{NICK}}</code> <code>{{SELL}}</code> <code>{{BUY}}</code> "
+        f"<code>{{SELL_AMOUNT}}</code> <code>{{BUY_AMOUNT}}</code> <code>{{LINK}}</code> <code>{{URL}}</code> <code>{{ERROR}}</code> and header ones.\n"
         f"HTML allowed: &lt;b&gt;, &lt;i&gt;, &lt;code&gt;, &lt;a&gt; etc."
     )
 
 def custom_menu_text():
     s = get_settings()
     header = s.get("custom_header") or "<i>(default)</i>"
+    body = s.get("custom_body") or "<i>(default)</i>"
     footer = s.get("custom_footer") or "<i>(none)</i>"
     return (
         f"📝 <b>Custom Message</b>\n\n"
-        f"This custom text will appear in the group post.\n\n"
+        f"Customize the full group post. The <b>Header</b> appears once on top, the <b>Body</b> "
+        f"is repeated for every merchant, and the <b>Footer</b> appears once at the bottom.\n\n"
         f"<b>Current Header:</b>\n{header}\n\n"
+        f"<b>Current Body (per merchant):</b>\n{body}\n\n"
         f"<b>Current Footer:</b>\n{footer}\n\n"
         f"Tap Edit to change. You can use:\n"
-        f"• <code>{{ASSET}}</code> / <code>{{FIAT}}</code>\n"
-        f"• HTML formatting\n"
+        f"• <code>{{ASSET}}</code> / <code>{{FIAT}}</code> / <code>{{PAIR}}</code>\n"
+        f"• Body only: <code>{{ICON}}</code> <code>{{EXCHANGE}}</code> <code>{{NICK}}</code> <code>{{SELL}}</code> <code>{{BUY}}</code> "
+        f"<code>{{SELL_AMOUNT}}</code> <code>{{BUY_AMOUNT}}</code> <code>{{LINK}}</code> <code>{{URL}}</code> <code>{{ERROR}}</code>\n"
+        f"• HTML formatting, new lines supported\n"
         f"• Send /cancel to abort editing\n\n"
         f"Example header:\n<code>📊 P2P {{ASSET}}/{{FIAT}} - Best Rates 🔥</code>\n"
+        f"Example body:\n<code>{{ICON}} {{NICK}} — Sell: {{SELL}} | Buy: {{BUY}} {{FIAT}}</code>\n"
         f"Example footer:\n<code>⚡️ Updated every {INTERVAL}s | Contact @youradmin</code>"
     )
 
@@ -375,6 +398,27 @@ async def on_my_chat_member(u: Update, c):
         state["group"] = None; state["group_title"] = ""; save()
         await notify_admins(c.bot, f"⚠️ Bot was removed from <b>{chat.title}</b> — group unset.")
 
+# ── delete "X joined / left the group" service messages ──
+async def on_join_left(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    """Auto-delete Telegram's join/leave service messages in the group."""
+    if not get_settings().get("delete_join_left", DEFAULT_SETTINGS["delete_join_left"]):
+        return
+    msg, chat = u.effective_message, u.effective_chat
+    if not msg or not chat or chat.type not in ("group", "supergroup"):
+        return
+    # only in the registered group (if one is set)
+    if state.get("group") and chat.id != state["group"]:
+        return
+    try:
+        await msg.delete()
+        kind = "joined" if msg.new_chat_members else "left"
+        member = msg.new_chat_members[0] if msg.new_chat_members else msg.left_chat_member
+        log.info("Deleted '%s the group' service message for %s in %s",
+                 kind, getattr(member, "full_name", "?"), chat.id)
+    except Exception as e:
+        log.warning("Could not delete join/left msg in %s: %s "
+                    "(make the bot a group admin with 'Delete messages' permission)", chat.id, e)
+
 # ── custom message helpers ──
 def apply_template(text: str) -> str:
     if not text:
@@ -385,21 +429,47 @@ def apply_template(text: str) -> str:
             .replace("{Asset}", ASSET.title()).replace("{Fiat}", FIAT.title())
             .replace("{PAIR}", f"{ASSET}/{FIAT}").replace("{pair}", f"{ASSET}/{FIAT}"))
 
+def apply_body_template(tpl: str, m: Merchant, r: dict) -> str:
+    """Render a custom per-merchant body block with placeholders.
+    Single-pass substitution: inserted values are never re-scanned."""
+    if not tpl:
+        return ""
+    nick = m.nickname or m.merchant_id
+    link = f'<a href="{m.url}">{nick}</a>' if m.url else nick
+    sell_amt = fmt_amount(r.get("sell_amount")) or "—"
+    buy_amt = fmt_amount(r.get("buy_amount")) or "—"
+    sell, buy = fmt(r.get("sell")), fmt(r.get("buy"))
+    err = r.get("error") or ""
+    mapping = {
+        "ASSET": ASSET, "asset": ASSET.lower(), "Asset": ASSET.title(),
+        "FIAT": FIAT, "fiat": FIAT.lower(), "Fiat": FIAT.title(),
+        "PAIR": f"{ASSET}/{FIAT}", "pair": f"{ASSET}/{FIAT}",
+        "ICON": ICON.get(m.exchange, "💱"),
+        "EXCHANGE": m.exchange.title(), "exchange": m.exchange, "Exchange": m.exchange.title(),
+        "NICK": nick, "nick": nick, "Nick": (nick[:1].upper() + nick[1:]) if nick else nick,
+        "URL": m.url or "", "url": m.url or "",
+        "LINK": link, "Link": link,
+        "SELL": sell, "Sell": sell, "BUY": buy, "Buy": buy,
+        "SELL_AMOUNT": sell_amt, "BUY_AMOUNT": buy_amt,
+        "SELL_LIQ": sell_amt, "BUY_LIQ": buy_amt,
+        "ERROR": err, "error": err,
+    }
+    keys = sorted(mapping, key=len, reverse=True)
+    pattern = re.compile(r"\{(" + "|".join(re.escape(k) for k in keys) + r")\}")
+    return pattern.sub(lambda mm: mapping[mm.group(1)], tpl)
+
 # ── add merchant by pasting URL / handle custom msg input ──
 async def on_text(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if not is_admin(u) or u.effective_chat.type != "private": return
     txt = u.message.text.strip()
 
     awaiting = c.user_data.get("awaiting_custom")
-    if awaiting in ("header", "footer"):
+    if awaiting in ("header", "body", "footer"):
         if txt.lower() == "/cancel":
             c.user_data.pop("awaiting_custom", None)
             await u.message.reply_text("❌ Cancelled.", reply_markup=panel())
             return
-        if awaiting == "header":
-            state["settings"]["custom_header"] = txt
-        else:
-            state["settings"]["custom_footer"] = txt
+        state["settings"][f"custom_{awaiting}"] = txt
         save()
         c.user_data.pop("awaiting_custom", None)
         await u.message.reply_html(f"✅ Custom {awaiting} saved:\n<code>{txt[:500]}</code>", reply_markup=panel())
@@ -444,9 +514,15 @@ def report(prices):
     else:
         lines = [f"📊 <b>P2P {ASSET}/{FIAT}</b>\n"]
 
+    custom_body = s.get("custom_body", "").strip()
     for m in merchants():
         r = prices.get(m.key)
         if not r:
+            continue
+        if custom_body:
+            block = apply_body_template(custom_body, m, r).strip()
+            if block:
+                lines.append(block)
             continue
         nick_display = m.nickname or m.merchant_id
         lines.append(f"{ICON[m.exchange]} <b>{m.exchange.title()}</b> · "
@@ -537,6 +613,7 @@ async def post(bot, force=False):
     else:
         snap = {k: [v.get("sell"), v.get("buy")] for k, v in prices.items()}
     snap["_header"] = s.get("custom_header","")
+    snap["_body"] = s.get("custom_body","")
     snap["_footer"] = s.get("custom_footer","")
     snap["_liq"] = s.get("show_liquidity")
     snap["_btn"] = s.get("show_buttons")
@@ -695,6 +772,32 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
             reply_markup=KB([[B("❌ Cancel", callback_data="cancel_edit")]])
         )
 
+    elif d == "edit_body":
+        c.user_data["awaiting_custom"] = "body"
+        await q.answer()
+        return await q.edit_message_text(
+            "📝 <b>Send new custom BODY now</b>\n\n"
+            "The body is repeated once per merchant in the group post.\n\n"
+            "Placeholders:\n"
+            "• <code>{ICON}</code> <code>{EXCHANGE}</code> <code>{NICK}</code>\n"
+            "• <code>{SELL}</code> <code>{BUY}</code> — best prices\n"
+            "• <code>{SELL_AMOUNT}</code> <code>{BUY_AMOUNT}</code> — liquidity\n"
+            "• <code>{LINK}</code> — clickable merchant name\n"
+            "• <code>{URL}</code> — merchant profile link\n"
+            "• <code>{ERROR}</code> — fetch error (if any)\n"
+            f"• <code>{{ASSET}}</code> = {ASSET} · <code>{{FIAT}}</code> = {FIAT} · <code>{{PAIR}}</code> = {ASSET}/{FIAT}\n"
+            "• HTML tags and new lines are supported\n\n"
+            "Example (default look):\n"
+            "<code>{ICON} &lt;b&gt;{EXCHANGE}&lt;/b&gt; · {LINK}\n"
+            "🔴 Sell: &lt;b&gt;{SELL}&lt;/b&gt; 💧 {SELL_AMOUNT} {ASSET}\n"
+            "🟢 Buy: &lt;b&gt;{BUY}&lt;/b&gt; 💧 {BUY_AMOUNT} {ASSET}</code>\n\n"
+            "Current:\n"
+            f"<code>{state['settings'].get('custom_body') or '(default)'}</code>\n\n"
+            "Send the new body text, or /cancel to abort.",
+            parse_mode="HTML",
+            reply_markup=KB([[B("❌ Cancel", callback_data="cancel_edit")]])
+        )
+
     elif d == "edit_footer":
         c.user_data["awaiting_custom"] = "footer"
         await q.answer()
@@ -711,8 +814,18 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
             reply_markup=KB([[B("❌ Cancel", callback_data="cancel_edit")]])
         )
 
+    elif d == "toggle_joinleft":
+        state["settings"]["delete_join_left"] = not state["settings"].get("delete_join_left", True)
+        save()
+        await q.answer(f"Delete join/left msgs {'ON' if state['settings']['delete_join_left'] else 'OFF'}")
+        try:
+            return await q.edit_message_text(settings_text(), parse_mode="HTML", reply_markup=settings_kb())
+        except:
+            pass
+
     elif d == "clear_custom":
         state["settings"]["custom_header"] = ""
+        state["settings"]["custom_body"] = ""
         state["settings"]["custom_footer"] = ""
         save()
         await q.answer("🗑 Custom message cleared")
@@ -793,6 +906,8 @@ def main():
     app.add_handler(CommandHandler("preview", preview_cmd))
     app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CallbackQueryHandler(on_button))
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS
+                                   | filters.StatusUpdate.LEFT_CHAT_MEMBER, on_join_left))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(error_handler)
     app.job_queue.run_repeating(job, interval=INTERVAL, first=5)
