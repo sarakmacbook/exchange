@@ -140,8 +140,9 @@ echo -e "${DIM}Ubuntu 20.04 / 22.04 / 24.04 · Binance · Bybit · OKX · Bitget
 }
 
 # ── Reopen stdin from /dev/tty if piped (curl | bash) so prompts work ──
-if [[ ! -t 0 && -e /dev/tty && -r /dev/tty ]]; then
-  exec < /dev/tty
+# If there is no controlling TTY, keep stdin as-is (args/env mode).
+if [[ ! -t 0 ]]; then
+  exec < /dev/tty 2>/dev/null || true
 fi
 
 # ── 1. banner & checks ──
