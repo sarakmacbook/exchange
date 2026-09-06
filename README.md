@@ -180,15 +180,7 @@ sudo bash ~/exchange/install.sh --update
 # alternative: cd ~/exchange && git pull && sudo systemctl restart p2p-bot
 ```
 
-**Uninstall (keeps data):**
-
-```bash
-sudo bash ~/exchange/uninstall.sh
-# or:
-sudo bash ~/exchange/install.sh --uninstall
-# full wipe (if you really want):
-sudo rm -rf /opt/p2p-bot ~/exchange/config.json ~/exchange/data.json
-```
+**Uninstall:** see the dedicated section below — [🗑️ Uninstall](#-uninstall).
 
 ---
 
@@ -202,6 +194,46 @@ docker compose up -d --build    # update after git pull
 ```
 
 Env vars override `config.json` — set `BOT_TOKEN`, `ADMIN_IDS`, `ASSET`, `FIAT`, `INTERVAL` in `.env` or `docker-compose.yml`.
+
+---
+
+## 🗑️ Uninstall
+
+### Option 1 — uninstall script (recommended, keeps your data)
+
+```bash
+# if installed as a regular user
+bash ~/exchange/uninstall.sh
+
+# if installed as root (to /opt/p2p-bot)
+sudo bash /opt/p2p-bot/uninstall.sh
+```
+
+### Option 2 — via the installer
+
+```bash
+sudo bash ~/exchange/install.sh --uninstall
+```
+
+Both **stop the service, remove the systemd unit, kill any running bot, and clean the cron entry** — but keep `config.json` and `data.json` so a reinstall restores your merchants instantly.
+
+### Full wipe (delete code + data)
+
+```bash
+# regular-user install
+rm -rf ~/exchange
+
+# root install
+sudo rm -rf /opt/p2p-bot
+```
+
+### Docker
+
+```bash
+cd ~/exchange          # or wherever you cloned it
+docker compose down    # stop + remove containers
+rm -rf ~/exchange      # delete code + .env (data lived in config.json/data.json)
+```
 
 ---
 
