@@ -2,6 +2,8 @@
 ```bash
 wget https://raw.githubusercontent.com/sarakmacbook/exchange/refs/heads/main/install.sh
 
+chmod +x install.sh
+
 ./install.sh
 ```
 
