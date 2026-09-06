@@ -8,6 +8,7 @@ Repo: https://github.com/sarakmacbook/exchange
 
 [![⬇️ One-Click Download (ZIP)](https://img.shields.io/badge/⬇️%20One%20Click%20Download%20Source%20(ZIP)-brightgreen)](https://github.com/sarakmacbook/exchange/archive/refs/heads/main.zip)
 [![🚀 One-Click Install Script](https://img.shields.io/badge/🚀%20One%20Click%20Install%20Script-blue)](https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh)
+[![🗑️ One-Click Uninstall](https://img.shields.io/badge/🗑️%20One%20Click%20Uninstall-redorange)](https://raw.githubusercontent.com/sarakmacbook/exchange/main/uninstall.sh)
 
 ## ✨ Features
 - 🔗 **Paste a public merchant URL** to the bot → merchant is added instantly (no commands).
@@ -199,7 +200,19 @@ Env vars override `config.json` — set `BOT_TOKEN`, `ADMIN_IDS`, `ASSET`, `FIAT
 
 ## 🗑️ Uninstall
 
-### Option 1 — uninstall script (recommended, keeps your data)
+### Option 1 — One-liner (one click, works from anywhere)
+
+[![🗑️ One-Click Uninstall](https://img.shields.io/badge/🗑️%20One%20Click%20Uninstall-redorange)](https://raw.githubusercontent.com/sarakmacbook/exchange/main/uninstall.sh)
+
+SSH into your VPS and paste ONE command — works even if you already deleted the code:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/uninstall.sh | sudo bash
+```
+
+It **stops the bot, removes the `p2p-bot` systemd service, kills any running process, and cleans the cron entry** — data files are kept (see *Full wipe* below to delete them).
+
+### Option 2 — uninstall script (from the install directory, keeps your data)
 
 ```bash
 # if installed as a regular user
@@ -209,13 +222,13 @@ bash ~/exchange/uninstall.sh
 sudo bash /opt/p2p-bot/uninstall.sh
 ```
 
-### Option 2 — via the installer
+### Option 3 — via the installer
 
 ```bash
 sudo bash ~/exchange/install.sh --uninstall
 ```
 
-Both **stop the service, remove the systemd unit, kill any running bot, and clean the cron entry** — but keep `config.json` and `data.json` so a reinstall restores your merchants instantly.
+All options do the same thing — **stop the service, remove the systemd unit, kill any running bot, and clean the cron entry** — and keep `config.json` and `data.json` so a reinstall restores your merchants instantly.
 
 ### Full wipe (delete code + data)
 
