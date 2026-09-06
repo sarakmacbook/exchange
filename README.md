@@ -6,13 +6,14 @@ Telegram bot that watches your favourite **P2P merchants** on **Binance · Bybit
 
 ## ⚡ One-Click Install
 
-Pick the installer that matches your machine — all three ask for your **bot token** (from [@BotFather](https://t.me/BotFather) → `/newbot`) and your **Telegram ID** (from [@userinfobot](https://t.me/userinfobot)), then start the bot.
+Pick the installer that matches your machine — all four ask for your **bot token** (from [@BotFather](https://t.me/BotFather) → `/newbot`) and your **Telegram ID** (from [@userinfobot](https://t.me/userinfobot)), then start the bot.
 
 | Installer | Best for | What it does |
 |---|---|---|
 | `install.sh` | Ubuntu/Debian **VPS with systemd** | venv + systemd service (auto-restart & reboot-safe) |
 | `install-docker.sh` | Any machine **with Docker**, incl. macOS | Docker Compose container (`restart: unless-stopped`) |
 | `install-local.sh` | **macOS / Linux without systemd / WSL** | venv + nohup + launchd (macOS) or cron `@reboot` autostart |
+| **python3 one-liner** | **Any machine with Python 3** (no curl / wget needed) | Downloads + runs `install-local.sh` in one command |
 
 > **curl or wget — your choice.** Every one-liner below is shown with both `curl` and `wget`; they are interchangeable. Inside the scripts the same applies: downloads automatically use **curl → wget → python3**, whichever exists on the box, and `git` is optional (a tarball is fetched instead when git is missing). Force a specific tool with `DOWNLOADER=wget`.
 
@@ -50,14 +51,20 @@ curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-
 wget -qO- https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-local.sh | bash
 ```
 
-<details>
-<summary>No curl and no wget? (python3 / PowerShell / manual)</summary>
+### Option D — Python 3 (no curl / no wget)
 
-**python3 (any Linux/macOS with Python 3):**
+One-click install with nothing but **Python 3** installed. It downloads `install-local.sh` and runs it:
 
 ```bash
 python3 -c "import urllib.request as u;print(u.urlopen('https://raw.githubusercontent.com/sarakmacbook/exchange/main/install-local.sh').read().decode())" | bash
 ```
+
+> This is the same local / no-systemd install as **Option C**, just launched by Python instead of `curl` or `wget`.
+
+<details>
+<summary>No curl and no wget? (python3 / PowerShell / manual)</summary>
+
+**python3 (any Linux/macOS with Python 3):** use **Option D** above — one command, no curl/wget needed.
 
 **Windows PowerShell** (then run it with WSL or Git Bash):
 
