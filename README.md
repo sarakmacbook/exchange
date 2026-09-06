@@ -148,7 +148,48 @@ docker compose up -d --build
 | 🟢/🔴 **Auto** | Toggle automatic posting on price change |
 | 📋 **Merchants** | List merchants — tap one to remove |
 | 👥 **Set group** | One click: choose the group that receives updates |
+| ⚙️ **Settings** | Liquidity, Buy/Sell buttons, auto-delete timers, **join/left cleanup** |
+| 📝 **Custom Msg** | Customize the **full** post: header, body (per-merchant template), footer |
+| 👁 **Preview** | See exactly how the group post will look |
 | 🔄 **Refresh** | Refresh the panel |
+
+### 📝 Custom message — header, body & footer
+
+Tap **📝 Custom Msg** (or ⚙️ Settings → Edit) to fully customize the group post:
+
+- **Header** — shown once on top (default: `📊 P2P {ASSET}/{FIAT}`).
+- **Body** — a template repeated **once per merchant**. Leave it default or write your own.
+- **Footer** — shown once at the bottom (default: none).
+
+**Body placeholders** (also `{ASSET}`, `{FIAT}`, `{PAIR}` work everywhere):
+
+| Placeholder | Replaced with |
+|---|---|
+| `{ICON}` | Exchange emoji (🟡 🟣 ⚫ 🔵) |
+| `{EXCHANGE}` | Exchange name, e.g. `Binance` |
+| `{NICK}` | Merchant nickname |
+| `{LINK}` | Clickable merchant name (`<a>` to the profile) |
+| `{URL}` | Raw merchant profile URL |
+| `{SELL}` / `{BUY}` | Best sell / buy price |
+| `{SELL_AMOUNT}` / `{BUY_AMOUNT}` | Available liquidity (if the merchant has ads) |
+| `{ERROR}` | Fetch error text, if any |
+
+HTML (`<b>`, `<i>`, `<code>`, `<a href>`) and new lines are supported. Example 3-line body:
+
+```
+{ICON} <b>{EXCHANGE}</b> · {LINK}
+🔴 Sell: <b>{SELL}</b> 💧 {SELL_AMOUNT} {ASSET}
+🟢 Buy: <b>{BUY}</b> 💧 {BUY_AMOUNT} {ASSET}
+```
+
+Use **👁 Preview** to check the result before it goes to the group.
+
+### 🚪 Auto-delete “joined / left the group” messages
+
+The bot deletes Telegram’s **“X joined the group”** and **“X left the group”** service messages in your group — including when people join after being **accepted via a join request** — so your price feed stays clean.
+
+- Toggle in ⚙️ **Settings → 🚪 Del Join/Left msgs** (ON by default).
+- ⚠️ The bot must be a **group admin** with the **Delete messages** permission, otherwise it can't remove those messages.
 
 ---
 
