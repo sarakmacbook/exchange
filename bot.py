@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 from telegram import Update, InlineKeyboardButton as B, InlineKeyboardMarkup as KB
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
-                          MessageHandler, ContextTypes, filters)
+                          MessageHandler, ChatMemberHandler, ContextTypes, filters)
 from exchanges import Merchant, parse_url, fetch, HEADERS
 
 # ── paths: always relative to this file (works with systemd WorkingDirectory) ──
@@ -181,27 +181,81 @@ is_admin = lambda u: u.effective_user and u.effective_user.id in ADMINS
 fmt = lambda p: f"{p:.4f}".rstrip("0").rstrip(".") if p is not None else "—"
 
 # ── panel ──
+BOT_USERNAME = None  # filled in post_init
+
+def set_group_button():
+    # One click: opens Telegram's "choose a group" picker, adds the bot, and the
+    # group is registered automatically (via /start setgroup + my_chat_member).
+    label = "👥 Change group" if state["group"] else "👥 Set group"
+    if BOT_USERNAME:
+        return B(label, url=f"https://t.me/{BOT_USERNAME}?startgroup=setgroup")
+    return B(label, callback_data="setgroup_help")
+
 def panel():
     a = state["auto"]
     return KB([[B("📊 Post prices now", callback_data="post"),
                 B(f"{'🟢' if a else '🔴'} Auto: {'ON' if a else 'OFF'}", callback_data="auto")],
-               [B("📋 Merchants", callback_data="list"), B("🔄 Refresh", callback_data="panel")]])
+               [B("📋 Merchants", callback_data="list"), set_group_button()],
+               [B("🔄 Refresh", callback_data="panel")]])
+
+def group_label():
+    if not state["group"]: return None
+    t = state.get("group_title")
+    return f"{t} ({state['group']})" if t else str(state["group"])
 
 def panel_text():
-    g = state["group"] or "not set — send /setgroup inside your group"
+    g = group_label() or "not set — tap 👥 Set group below"
     return (f"🤖 <b>P2P Price Bot</b>\nGroup: <code>{g}</code>\n"
             f"Merchants: {len(state['merchants'])} · Pair: {ASSET}/{FIAT} · every {INTERVAL}s\n\n"
             f"➕ <b>Paste a merchant's public URL here to add it.</b>")
 
+def _set_group(chat):
+    state["group"] = chat.id
+    state["group_title"] = chat.title or ""
+    state["last"] = {}  # force a fresh post to the new group
+    save()
+
+async def notify_admins(bot, text):
+    for a in ADMINS:
+        try: await bot.send_message(a, text, parse_mode="HTML", reply_markup=panel())
+        except Exception: pass
+
 async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    chat = u.effective_chat
+    if chat.type in ("group", "supergroup"):
+        # /start setgroup arrives when the bot is added via the 👥 Set group button
+        if c.args and c.args[0] == "setgroup":
+            if not is_admin(u): return
+            _set_group(chat)
+            await u.message.reply_text(f"✅ <b>{chat.title}</b> will receive price updates.", parse_mode="HTML")
+            await notify_admins(c.bot, f"✅ Group set to <b>{chat.title}</b>")
+        return
     if is_admin(u): await u.message.reply_html(panel_text(), reply_markup=panel())
-    elif u.effective_chat.type == "private":
-        await u.message.reply_text("⛔ You are not authorized. Ask the bot admin to add your ID.")
+    else: await u.message.reply_text("⛔ You are not authorized. Ask the bot admin to add your ID.")
 
 async def setgroup(u: Update, c):
     if not is_admin(u): return
-    state["group"] = u.effective_chat.id; save()
+    if u.effective_chat.type == "private":
+        return await u.message.reply_html("Use the 👥 <b>Set group</b> button, or send /setgroup inside your group.",
+                                          reply_markup=panel())
+    _set_group(u.effective_chat)
     await u.message.reply_text("✅ This group will receive price updates.")
+
+async def on_my_chat_member(u: Update, c):
+    """Auto-register the group when an admin adds the bot to it (no command needed)."""
+    m = u.my_chat_member
+    chat = m.chat
+    if chat.type not in ("group", "supergroup"): return
+    was, now = m.old_chat_member.status, m.new_chat_member.status
+    joined = was in ("left", "kicked") and now in ("member", "administrator")
+    if joined and m.from_user and m.from_user.id in ADMINS and state["group"] != chat.id:
+        _set_group(chat)
+        try: await c.bot.send_message(chat.id, f"✅ <b>{chat.title}</b> will receive price updates.", parse_mode="HTML")
+        except Exception: pass
+        await notify_admins(c.bot, f"✅ Group set to <b>{chat.title}</b>")
+    elif now in ("left", "kicked") and state["group"] == chat.id:
+        state["group"] = None; state["group_title"] = ""; save()
+        await notify_admins(c.bot, f"⚠️ Bot was removed from <b>{chat.title}</b> — group unset.")
 
 # ── add merchant by pasting URL ──
 async def on_text(u: Update, c):
@@ -267,6 +321,8 @@ async def on_button(u: Update, c):
         await q.answer("✅ Posted!" if ok else "⚠️ Set group (/setgroup) and add merchants first", show_alert=not ok)
     elif d == "auto":
         state["auto"] = not state["auto"]; save(); await q.answer()
+    elif d == "setgroup_help":
+        return await q.answer("Add the bot to your group, then send /setgroup there.", show_alert=True)
     elif d == "list":
         await q.answer()
         return await q.edit_message_text("📋 <b>Merchants</b> — tap to remove" if state["merchants"]
@@ -291,9 +347,16 @@ def main():
         try: signal.signal(sig, lambda *_: sys.exit(0))
         except: pass
 
-    app = Application.builder().token(TOKEN).build()
+    async def post_init(application):
+        global BOT_USERNAME
+        me = await application.bot.get_me()
+        BOT_USERNAME = me.username
+        log.info("Logged in as @%s", BOT_USERNAME)
+
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("setgroup", setgroup))
+    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(error_handler)
@@ -301,7 +364,7 @@ def main():
     print(f"🚀 Bot running · {ASSET}/{FIAT} · every {INTERVAL}s · Ctrl+C to stop")
     print(f"   Admins: {', '.join(map(str, ADMINS))} · Group: {state['group'] or 'not set'} · Merchants: {len(state['merchants'])}")
     if not state["group"]:
-        print("   → Add bot to your Telegram group and send /setgroup there")
+        print("   → Open the bot in Telegram, /start, tap 👥 Set group")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
