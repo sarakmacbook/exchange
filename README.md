@@ -1,6 +1,6 @@
 
 ```bash
-https://raw.githubusercontent.com/sarakmacbook/exchange/refs/heads/main/install.sh
+wget https://raw.githubusercontent.com/sarakmacbook/exchange/refs/heads/main/install.sh
 
 ./install.sh
 ```
