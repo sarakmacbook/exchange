@@ -6,6 +6,9 @@ and posts their **best selling price** (merchant sells → you buy) and **best b
 
 Repo: https://github.com/sarakmacbook/exchange
 
+[![⬇️ One-Click Download (ZIP)](https://img.shields.io/badge/⬇️%20One%20Click%20Download%20Source%20(ZIP)-brightgreen)](https://github.com/sarakmacbook/exchange/archive/refs/heads/main.zip)
+[![🚀 One-Click Install Script](https://img.shields.io/badge/🚀%20One%20Click%20Install%20Script-blue)](https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh)
+
 ## ✨ Features
 - 🔗 **Paste a public merchant URL** to the bot → merchant is added instantly (no commands).
 - 📊 **One button** posts all merchant prices to your group right now.
@@ -29,13 +32,37 @@ Repo: https://github.com/sarakmacbook/exchange
 
 ---
 
+## ⬇️ One-Click Download from GitHub
+
+No git, no cloning — grab the latest source in **one click**:
+
+[![⬇️ Download exchange (ZIP)](https://img.shields.io/badge/⬇️%20Download%20Source%20(ZIP)-brightgreen)](https://github.com/sarakmacbook/exchange/archive/refs/heads/main.zip)
+
+<details>
+<summary>Prefer the terminal? (curl / wget)</summary>
+
+```bash
+# curl
+curl -L -o exchange-main.zip https://github.com/sarakmacbook/exchange/archive/refs/heads/main.zip
+unzip exchange-main.zip && cd exchange-main
+
+# or wget
+wget https://github.com/sarakmacbook/exchange/archive/refs/heads/main.zip
+unzip exchange-main.zip && cd exchange-main
+```
+</details>
+
+After unzipping, follow [One-Click Install](#-one-click-install-on-ubuntu-vps-2004--2204--2404) (Option B) — `cd exchange-main && sudo bash install.sh`.
+
+---
+
 ## 🚀 One-Click Install on Ubuntu VPS (20.04 / 22.04 / 24.04)
 
 > **Fresh VPS? Paste ONE command and you're done.** Tested on clean Ubuntu.
 
-### Option A — One-liner (fastest)
+### Option A — Install script, one-liner (fastest)
 
-SSH into your VPS, then run:
+[`install.sh`](install.sh) is the one‑click install script (source: [raw on GitHub](https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh)). SSH into your VPS, then run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sarakmacbook/exchange/main/install.sh | bash
